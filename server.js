@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام
+// 1. المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -20,7 +20,7 @@ const PUBLIC_API_URL = process.env.PUBLIC_API_URL ||
                        (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`);
 
 // =============================================================
-// 2. إعدادات CORS الديناميكية
+// 2. إعدادات CORS المحددة
 // =============================================================
 const allowedOrigins = (
     process.env.CORS_ORIGINS ||
@@ -63,10 +63,9 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع
+// 4. مسار مجلد المقاطع المؤقتة (Volume)
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
-
 if (!fs.existsSync(CLIPS_DIR)) {
     fs.mkdirSync(CLIPS_DIR, { recursive: true });
 }
@@ -74,8 +73,8 @@ if (!fs.existsSync(CLIPS_DIR)) {
 // =============================================================
 // 5. مسارات الأدوات وإعداد الكوكيز
 // =============================================================
-const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
-const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
+const YTDLP_PATH = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
+const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
 const COOKIES_PATH = path.join(os.tmpdir(), 'youtube_cookies.txt');
@@ -89,7 +88,7 @@ if (process.env.YOUTUBE_COOKIES) {
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
         console.log('🍪 Session credentials loaded successfully.');
     } catch (err) {
-        console.error('❌ Credentials processing error:', err);
+        console.error('❌ Credentials processing error occurred.');
     }
 }
 
@@ -120,7 +119,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات الثلاث بدقة (Free, Basic, Pro)
+// 6. تعريف صلاحيات الباقات (Free, Basic, Pro)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
@@ -135,7 +134,7 @@ const PLAN_PERMISSIONS = {
         max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
-        allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
+        allowed_formats: ['mp4', 'mp3']
     },
     pro: {
         plan_name: 'Pro',
@@ -146,11 +145,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700; // 45 دقيقة للصوت
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة للـ 4K
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة للـ 1080p / 2K
-    if (qualityKey === '720p') return 3600; // ساعة كاملة للـ 720p
-    return 7200; // ساعتان لـ 480p وما دون
+    if (format === 'mp3') return 2700; // 45 دقيقة
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
+    if (qualityKey === '720p') return 3600; // 60 دقيقة
+    return 7200; // 120 دقيقة للجودات الأقل
 }
 
 function parseTargetHeight(qualityStr) {
@@ -167,7 +166,7 @@ function parseTargetHeight(qualityStr) {
 }
 
 function isAudioFormat(format) {
-    return ['mp3', 'wav'].includes(format);
+    return ['mp3', 'wav'].includes((format || '').toLowerCase());
 }
 
 function extractUserIdFromToken(token) {
@@ -183,16 +182,16 @@ function extractUserIdFromToken(token) {
     return null;
 }
 
-// دالة تحديد الخطة بدقة بناءً على جدول users
+// دالة تحديد الخطة المعتمدة على users.plan مع ترقية الـ Admin
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
-    if (userRow.is_pro === true) return 'pro';
-    if (userRow.plan) {
-        const p = userRow.plan.toLowerCase().trim();
-        if (['free', 'basic', 'pro'].includes(p)) return p;
+    if (userRow.is_admin === true || userRow.role === 'admin') {
+        return 'pro';
     }
-    if (userRow.role === 'basic') return 'basic';
+    const plan = String(userRow.plan || 'free').toLowerCase().trim();
+    if (['free', 'basic', 'pro'].includes(plan)) {
+        return plan;
+    }
     return 'free';
 }
 
@@ -204,21 +203,27 @@ async function getUserProfileData(userId) {
         .eq('id', userId)
         .maybeSingle();
 
-    if (!userRow) {
-        const { data: profileRow } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .maybeSingle();
-        userRow = profileRow;
-    }
-
     return userRow;
 }
 
+function sanitizeFilename(name) {
+    if (!name) return 'clip';
+    return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
+}
+
 // =============================================================
-// مسارات التحقق والصحة
+// Endpoints
 // =============================================================
+
+// GET /health
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'cuttertube-server'
+    });
+});
+
+// GET /
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -228,50 +233,12 @@ app.get('/', (req, res) => {
     });
 });
 
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        service: 'cuttertube-server',
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.get('/download/:tempFilename/:finalFilename', (req, res) => {
-    try {
-        const { tempFilename, finalFilename } = req.params;
-        const decodedFinalFilename = decodeURIComponent(finalFilename);
-        const filePath = path.join(CLIPS_DIR, tempFilename);
-
-        if (fs.existsSync(filePath)) {
-            res.download(filePath, decodedFinalFilename, (err) => {
-                if (err) console.error("[Download] Error sending file:", err);
-                fs.unlink(filePath, (unlinkErr) => {
-                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
-                });
-            });
-        } else {
-            res.status(404).send('File not found or has already been downloaded.');
-        }
-    } catch (error) {
-        console.error("[Download Error]", error);
-        res.status(500).send("An internal server error occurred.");
-    }
-});
-
-function sanitizeFilename(name) {
-    if (!name) return 'clip';
-    return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
-}
-
-// =============================================================
-// Endpoint to get Video Metadata
-// =============================================================
+// GET /video-metadata
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
     const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
     
@@ -283,15 +250,39 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata] Extraction failed (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput.split('\n')[0]}`);
             return res.status(500).json({ 
-                message: 'Failed to fetch video details. Please try again later.'
+                message: 'Failed to fetch video metadata.' 
             });
         }
 
         try {
             const info = JSON.parse(output);
 
+            // 1. حساب الجودات المتاحة الحقيقية
+            const standardHeights = [144, 240, 360, 480, 720, 1080, 1440, 2160];
+            const detectedHeights = new Set();
+
+            if (info.formats && Array.isArray(info.formats)) {
+                info.formats.forEach(f => {
+                    if (f.height && typeof f.height === 'number') {
+                        detectedHeights.add(f.height);
+                    }
+                });
+            }
+
+            const availableQualities = standardHeights
+                .filter(h => {
+                    for (const detected of detectedHeights) {
+                        if (Math.abs(detected - h) <= 15 || detected >= h) {
+                            return true;
+                        }
+                    }
+                    return false;
+                })
+                .map(h => `${h}p`);
+
+            // 2. استخراج المسارات الصوتية
             const audioTracks = [];
             const languageMap = {};
 
@@ -338,6 +329,7 @@ app.get('/video-metadata', async (req, res) => {
                 audioTracks.push(languageMap[key]);
             }
 
+            // 3. استخراج الترجمات
             const subtitles = [];
             if (info.subtitles) {
                 for (const lang in info.subtitles) {
@@ -359,17 +351,19 @@ app.get('/video-metadata', async (req, res) => {
             }
 
             res.json({
+                availableQualities,
                 audioTracks,
                 subtitles
             });
 
         } catch (e) {
-            console.error(`[Metadata] Failed to parse response: ${e}`);
+            console.error(`[Metadata Parse Error]: ${e.message}`);
             res.status(500).json({ message: 'Failed to process video metadata.' });
         }
     });
 });
 
+// GET /user-status
 app.get('/user-status', async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
@@ -388,18 +382,19 @@ app.get('/user-status', async (req, res) => {
         const plan = resolveUserPlan(userRow);
 
         res.json({
-            subscription: plan.toUpperCase(),
             plan: plan,
+            subscription: plan.toUpperCase(),
             is_pro: plan === 'pro',
             is_admin: userRow?.is_admin === true || userRow?.role === 'admin'
         });
 
     } catch (error) {
-        console.error("[/user-status] Error:", error);
+        console.error("[/user-status Error]:", error.message);
         res.status(500).json({ message: "A server error occurred." });
     }
 });
 
+// GET /progress/:jobId
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
     if (!jobs[jobId]) return res.status(404).json({ message: 'Job not found.' });
@@ -432,9 +427,7 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
-// =============================================================
-// مسار إنشاء وقص الفيديو المطور لجميع الباقات
-// =============================================================
+// POST /create-clip
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
@@ -456,7 +449,6 @@ app.post('/create-clip', async (req, res) => {
             if (userId) {
                 const userRow = await getUserProfileData(userId);
                 userPlan = resolveUserPlan(userRow);
-                console.log(`👤 [Auth Identity] User ID: ${userId} | Plan: ${userPlan.toUpperCase()}`);
             }
         }
 
@@ -467,7 +459,7 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseTargetHeight(quality);
         const qualityKey = targetHeight >= 2160 ? '4k' : (targetHeight >= 1440 ? '2k' : `${targetHeight}p`);
 
-        // 1. فحص المدة المسموحة
+        // 1. التحقق من المدة المسموحة
         let maxAllowedDuration = permissions.max_duration;
         if (userPlan === 'pro') {
             maxAllowedDuration = getMaxDurationForPro(qualityKey, format.toLowerCase());
@@ -480,7 +472,7 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        // 2. فحص الجودة المسموحة
+        // 2. التحقق الأمني من صلاحيات الباقة للجودة
         const isQualityAllowed = permissions.allowed_qualities.includes(qualityKey) || 
                                  permissions.allowed_qualities.includes(`${targetHeight}p`) ||
                                  (permissions.allowed_qualities.includes('4k') && targetHeight >= 2160) ||
@@ -492,14 +484,12 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        // 3. فحص الصيغة المسموحة
+        // 3. التحقق الأمني من صلاحيات الباقة للصيغة
         if (!permissions.allowed_formats.includes(format.toLowerCase())) {
             return res.status(403).json({ 
                 message: `The selected format (${format}) is not available on the ${permissions.plan_name} plan.` 
             });
         }
-
-        console.log(`🎬 [Processing] User: ${userId || 'Guest'} | Plan: ${userPlan.toUpperCase()} | Quality: ${quality} (${targetHeight}p) | Duration: ${duration}s`);
 
         jobId = crypto.randomBytes(16).toString('hex');
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -525,10 +515,10 @@ app.post('/create-clip', async (req, res) => {
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // استخراج أفضل صيغة فيديو حتى الجودة المطلوبة (DASH Streams)
+        // محدد الجودة الدقيق (DASH Format Selector)
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
-            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best[height<=?${targetHeight}]/best`;
+            : `bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -551,6 +541,7 @@ app.post('/create-clip', async (req, res) => {
         });
 
         ytdlpProcess.on('error', (err) => {
+            console.error(`[Job ${jobId}] Download process spawn error:`, err.message);
             jobs[jobId].status = 'failed';
             jobs[jobId].error = 'Processing failed to initialize.';
         });
@@ -560,8 +551,21 @@ app.post('/create-clip', async (req, res) => {
             const actualRawPath = foundFiles.length > 0 ? path.join(CLIPS_DIR, foundFiles[0]) : null;
 
             if (code !== 0 || !actualRawPath || !fs.existsSync(actualRawPath)) {
-                jobs[jobId].status = 'failed';
-                jobs[jobId].error = 'Failed to extract video section. Please try again.';
+                console.error(`[Job ${jobId}] Download failed (code ${code}):`, {
+                    requestedQuality: quality,
+                    targetHeight,
+                    formatSelection,
+                    stderr: ytdlpError.split('\n')[0]
+                });
+
+                // توضيح سبب عدم توفر الجودة المطلوبة دون تنزيل جودة رديئة بصمت
+                if (ytdlpError.includes('Requested format is not available')) {
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = `Requested ${quality} quality is not available for this video on YouTube.`;
+                } else {
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = 'Failed to extract video section. Please try again.';
+                }
                 return;
             }
 
@@ -571,7 +575,6 @@ app.post('/create-clip', async (req, res) => {
             let subPath = null;
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
                 const subFileBase = path.join(CLIPS_DIR, `sub_${jobId}`);
-                
                 const subArgs = getBaseYtDlpArgs([
                     '--skip-download',
                     '--write-subs',
@@ -596,7 +599,7 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // معالجة المقطع وتحويل كودك VP9/AV1 إلى H.264 لضمان عمل 1080p و 4K
+            // FFmpeg Render Pipeline
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -661,7 +664,7 @@ app.post('/create-clip', async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز H.264 عالي السرعة لضمان تشغيل 1080p و 4K على كافة الأجهزة
+                // ترميز H.264 متوافق مع MP4 لكافة أجهزة العرض
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22');
 
                 if (mute) {
@@ -681,7 +684,7 @@ app.post('/create-clip', async (req, res) => {
         });
 
     } catch (e) {
-        console.error("[/create-clip] Error:", e);
+        console.error("[/create-clip Error]:", e.message);
         if (jobId && jobs[jobId]) {
             delete jobs[jobId];
         }
@@ -710,7 +713,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     ffmpegProcess.on('error', (err) => {
         job.status = 'failed';
         job.error = 'Processing encountered an unexpected error.';
-        console.error(`[Job ${jobId}] Rendering error:`, err);
+        console.error(`[Job ${jobId}] Rendering process error:`, err.message);
     });
 
     ffmpegProcess.on('close', (code) => {
@@ -731,7 +734,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                     };
                     await supabase.from('clips').insert(insertData);
                 } catch (dbError) { 
-                    console.error(`[Job ${jobId}] Log Error:`, dbError); 
+                    console.error(`[Job ${jobId}] DB Log Warning:`, dbError.message); 
                 }
             }
             logClipToDatabase();
@@ -743,13 +746,36 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
         } else {
             job.status = 'failed';
             job.error = 'Video processing failed. Please try again.';
-            console.error(`[Job ${jobId}] Render exited with code ${code}. Stderr:`, stderrOutput);
+            console.error(`[Job ${jobId}] Render process exited with code ${code}.`);
         }
     });
 }
 
+// GET /download/:tempFilename/:finalFilename
+app.get('/download/:tempFilename/:finalFilename', (req, res) => {
+    try {
+        const { tempFilename, finalFilename } = req.params;
+        const decodedFinalFilename = decodeURIComponent(finalFilename);
+        const filePath = path.join(CLIPS_DIR, tempFilename);
+
+        if (fs.existsSync(filePath)) {
+            res.download(filePath, decodedFinalFilename, (err) => {
+                if (err) console.error("[Download] Error sending file:", err);
+                fs.unlink(filePath, (unlinkErr) => {
+                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
+                });
+            });
+        } else {
+            res.status(404).send('File not found or has already been downloaded.');
+        }
+    } catch (error) {
+        console.error("[Download Error]", error);
+        res.status(500).send("An internal server error occurred.");
+    }
+});
+
 // =============================================================
-// 7. تشغيل السيرفر على جميع الواجهات 0.0.0.0
+// 7. تشغيل السيرفر
 // =============================================================
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ CutterTube Server is running on port ${PORT}`);
