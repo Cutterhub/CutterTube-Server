@@ -98,6 +98,8 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--user-agent', USER_AGENT,
         '--no-warnings',
         '--no-check-certificates',
+        '--no-playlist',
+        '--force-ipv4',
         '--js-runtimes', 'node'
     ];
 
@@ -465,31 +467,41 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio';
 
+        // اختيار الصيغ بمرونة مطلقة مع دعم كافة الجودات
         let formatSelection = isAudioFormat(format)
-            ? (audioTrackId ? audioTrackId : `bestaudio/best`)
-            : `bestvideo[height<=${targetHeight}][ext=mp4]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/bestvideo+bestaudio/best`;
+            ? (audioTrackId ? audioTrackId : 'bestaudio/best')
+            : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
 
         const ytdlpArgs = getBaseYtDlpArgs([videoUrl, '-f', formatSelection, '-g']);
         const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
         
         let streamUrls = '';
+        let ytdlpError = '';
+
         ytdlp.stdout.on('data', (data) => streamUrls += data.toString());
-        ytdlp.stderr.on('data', (data) => console.error(`[Job ${jobId}] YTDLP Stderr:`, data.toString()));
-        ytdlp.on('error', (err) => { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Failed to start yt-dlp.'; });
+        ytdlp.stderr.on('data', (data) => {
+            ytdlpError += data.toString();
+            console.error(`[Job ${jobId}] YTDLP Stderr:`, data.toString());
+        });
+        ytdlp.on('error', (err) => { 
+            jobs[jobId].status = 'failed'; 
+            jobs[jobId].error = 'Failed to start yt-dlp.'; 
+        });
 
         ytdlp.on('close', async (code) => {
-            if (code !== 0 || !streamUrls.trim()) {
+            const urls = streamUrls.trim().split('\n').filter(u => u.startsWith('http'));
+            
+            if (code !== 0 || urls.length === 0) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = 'Failed to fetch stream URLs from YouTube.';
+                jobs[jobId].error = 'Failed to fetch stream URLs from YouTube. ' + (ytdlpError.split('\n')[0] || '');
                 return;
             }
             jobs[jobId].status = 'processing';
             jobs[jobId].progress = 5;
 
             const outputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
-            const urls = streamUrls.trim().split('\n');
             const videoStreamUrl = urls[0];
-            const audioStreamUrl = isAudioFormat(format) ? null : (urls.length > 1 ? urls[1] : null);
+            const audioStreamUrl = isAudioFormat(format) ? null : (urls.length > 1 ? urls[1] : urls[0]);
 
             let subPath = null;
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
@@ -579,14 +591,17 @@ app.post('/create-clip', async (req, res) => {
                 let ffmpegArgs = [];
                 ffmpegArgs.push('-user_agent', USER_AGENT);
                 ffmpegArgs.push('-ss', startTime.toString(), '-i', videoStreamUrl);
-                if (audioStreamUrl) {
+                if (audioStreamUrl && audioStreamUrl !== videoStreamUrl) {
                     ffmpegArgs.push('-user_agent', USER_AGENT);
                     ffmpegArgs.push('-ss', startTime.toString(), '-i', audioStreamUrl);
                 }
 
                 ffmpegArgs.push('-t', totalDuration.toString());
-                if (audioStreamUrl && !mute) ffmpegArgs.push('-map', '0:v:0', '-map', '1:a:0');
-                else ffmpegArgs.push('-map', '0:v:0');
+                if (audioStreamUrl && audioStreamUrl !== videoStreamUrl && !mute) {
+                    ffmpegArgs.push('-map', '0:v:0', '-map', '1:a:0');
+                } else {
+                    ffmpegArgs.push('-map', '0:v:0');
+                }
 
                 let filters = [];
                 if (permissions.watermark) {
@@ -609,7 +624,7 @@ app.post('/create-clip', async (req, res) => {
                 if (mute) {
                     console.log(`[Job ${jobId}] Muting audio as requested.`);
                     ffmpegArgs.push('-an');
-                } else if (audioStreamUrl) {
+                } else if (audioStreamUrl && audioStreamUrl !== videoStreamUrl) {
                     ffmpegArgs.push('-c:a', 'aac', '-b:a', '192k');
                 }
 
