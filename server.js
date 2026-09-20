@@ -268,6 +268,7 @@ app.get('/video-metadata', async (req, res) => {
             const languageMap = {};
 
             if (info.formats) {
+                console.log(`[Metadata] Analyzing ${info.formats.length} formats for video: ${videoId}`);
                 info.formats.forEach(f => {
                     const hasAudio = f.acodec && f.acodec !== 'none';
                     const hasNoVideo = !f.vcodec || f.vcodec === 'none';
@@ -291,6 +292,7 @@ app.get('/video-metadata', async (req, res) => {
             }
 
             if (info.audio_tracks && Array.isArray(info.audio_tracks)) {
+                console.log(`[Metadata] Found ${info.audio_tracks.length} audio_tracks in info.`);
                 info.audio_tracks.forEach(track => {
                     const lang = track.id || track.language || 'unknown';
                     const name = track.name || track.language_preference || lang;
@@ -305,6 +307,8 @@ app.get('/video-metadata', async (req, res) => {
                     }
                 });
             }
+
+            console.log(`[Metadata] Unique audio languages identified: ${Object.keys(languageMap).length}`);
 
             for (const key in languageMap) {
                 audioTracks.push(languageMap[key]);
@@ -474,7 +478,8 @@ app.post('/create-clip', async (req, res) => {
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
 
-        const rawClipPath = path.join(CLIPS_DIR, `raw_${jobId}.mp4`);
+        const rawClipPrefix = `raw_${jobId}`;
+        const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
         const finalOutputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
 
         // تحميل الجزء المحدد فقط عبر yt-dlp مع الكوكيز
@@ -501,7 +506,11 @@ app.post('/create-clip', async (req, res) => {
         });
 
         ytdlpProcess.on('close', async (code) => {
-            if (code !== 0 || !fs.existsSync(rawClipPath)) {
+            // البحث عن الملف المحمّل الفعلي في المجلد أياً كان امتداده
+            const foundFiles = fs.readdirSync(CLIPS_DIR).filter(f => f.startsWith(rawClipPrefix) && !f.endsWith('.part'));
+            const actualRawPath = foundFiles.length > 0 ? path.join(CLIPS_DIR, foundFiles[0]) : null;
+
+            if (code !== 0 || !actualRawPath || !fs.existsSync(actualRawPath)) {
                 jobs[jobId].status = 'failed';
                 jobs[jobId].error = 'Failed to download clip section from YouTube. ' + (ytdlpError.split('\n')[0] || '');
                 return;
@@ -540,11 +549,11 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='ClipsCap.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // معالجة الفيديو محلياً عبر FFmpeg بدون لمس الإنترنت
+            // معالجة الفيديو محلياً عبر FFmpeg
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
-                    '-i', rawClipPath,
+                    '-i', actualRawPath,
                     '-vf', `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen`,
                     '-y', palettePath
                 ];
@@ -553,7 +562,7 @@ app.post('/create-clip', async (req, res) => {
                     if (paletteCode !== 0) { 
                         jobs[jobId].status = 'failed'; 
                         jobs[jobId].error = 'FFmpeg failed during palette generation.'; 
-                        if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+                        if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                         return; 
                     }
 
@@ -564,7 +573,7 @@ app.post('/create-clip', async (req, res) => {
                     filterComplex += `[x];[x][1:v]paletteuse`;
 
                     const gifArgs = [
-                        '-i', rawClipPath,
+                        '-i', actualRawPath,
                         '-i', palettePath,
                         '-filter_complex', filterComplex,
                         '-y', '-progress', 'pipe:1',
@@ -573,12 +582,12 @@ app.post('/create-clip', async (req, res) => {
                     const gifProcess = spawn(FFMPEG_PATH, gifArgs);
                     handleFfmpegProcess(gifProcess, jobId, totalDuration, clipMetadata, () => {
                         if (fs.existsSync(palettePath)) fs.unlinkSync(palettePath);
-                        if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+                        if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                     });
                 });
             } else if (isAudioFormat(format)) {
                 let ffmpegArgs = [
-                    '-i', rawClipPath,
+                    '-i', actualRawPath,
                     '-vn'
                 ];
                 if (format === 'mp3') ffmpegArgs.push('-c:a', 'libmp3lame', '-q:a', '0');
@@ -587,10 +596,10 @@ app.post('/create-clip', async (req, res) => {
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
                 handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
-                    if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+                    if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                 });
             } else {
-                let ffmpegArgs = ['-i', rawClipPath];
+                let ffmpegArgs = ['-i', actualRawPath];
                 let filters = [];
 
                 if (permissions.watermark) {
@@ -619,7 +628,7 @@ app.post('/create-clip', async (req, res) => {
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
                 handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
                     if (subPath && fs.existsSync(subPath)) fs.unlinkSync(subPath);
-                    if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+                    if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                 });
             }
         });
