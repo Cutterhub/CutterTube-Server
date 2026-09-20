@@ -119,7 +119,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
 const jobs = {};
 
-// --- تعريف صلاحيات الخطط ---
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
@@ -166,7 +165,6 @@ function calculateCreditCost(durationInSeconds, quality, format) {
     return Math.max(1, Math.ceil(calculatedCost));
 }
 
-// دالة مساعدة للبحث في جدول users أو profiles
 async function getUserProfileData(userId) {
     let { data: userRow } = await supabase
         .from('users')
@@ -186,7 +184,6 @@ async function getUserProfileData(userId) {
     return userRow;
 }
 
-// مسار فحص صحة السيرفر
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -234,9 +231,6 @@ function sanitizeFilename(name) {
     return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
 }
 
-// =============================================================
-// Endpoint to get Video Metadata (Subs & Audio)
-// =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
@@ -268,7 +262,6 @@ app.get('/video-metadata', async (req, res) => {
             const languageMap = {};
 
             if (info.formats) {
-                console.log(`[Metadata] Analyzing ${info.formats.length} formats for video: ${videoId}`);
                 info.formats.forEach(f => {
                     const hasAudio = f.acodec && f.acodec !== 'none';
                     const hasNoVideo = !f.vcodec || f.vcodec === 'none';
@@ -292,7 +285,6 @@ app.get('/video-metadata', async (req, res) => {
             }
 
             if (info.audio_tracks && Array.isArray(info.audio_tracks)) {
-                console.log(`[Metadata] Found ${info.audio_tracks.length} audio_tracks in info.`);
                 info.audio_tracks.forEach(track => {
                     const lang = track.id || track.language || 'unknown';
                     const name = track.name || track.language_preference || lang;
@@ -307,8 +299,6 @@ app.get('/video-metadata', async (req, res) => {
                     }
                 });
             }
-
-            console.log(`[Metadata] Unique audio languages identified: ${Object.keys(languageMap).length}`);
 
             for (const key in languageMap) {
                 audioTracks.push(languageMap[key]);
@@ -404,9 +394,6 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
-// =============================================================
-// مسار إنشاء وقص الفيديو (يدعم الأعضاء المسجلين والزوار Guests)
-// =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
@@ -416,7 +403,6 @@ app.post('/create-clip', async (req, res) => {
         let currentCredits = 100;
         let isGuest = true;
 
-        // التحقق مما إذا كان المستخدم مسجل دخول
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
             try {
@@ -449,7 +435,6 @@ app.post('/create-clip', async (req, res) => {
 
         const requiredCredits = calculateCreditCost(duration, quality, format);
 
-        // خصم الرصيد فقط في حال كان المستخدم مسجلاً
         if (!isGuest && user) {
             if (currentCredits < requiredCredits) {
                 return res.status(402).json({ message: `Insufficient credits.`, details: { required: requiredCredits, available: currentCredits } });
@@ -468,7 +453,12 @@ app.post('/create-clip', async (req, res) => {
 
         jobId = crypto.randomBytes(16).toString('hex');
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-        const finalFilename = `${sanitizeFilename(title)}.${format}`;
+        
+        // ==========================================
+        // تعديل اسم الملف ليحتوي على (cuttertube.com)
+        // ==========================================
+        const cleanTitle = sanitizeFilename(title);
+        const finalFilename = `(cuttertube.com) ${cleanTitle}.${format}`;
 
         const clipMetadata = { 
             userId: user ? user.id : null, 
@@ -684,10 +674,9 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
         if (code === 0 && fs.existsSync(path.join(CLIPS_DIR, job.tempFile))) {
             if (onCompleteCallback) onCompleteCallback();
 
-            // حفظ السجل فقط للمستخدم المسجل
             async function logClipToDatabase() {
                 try {
-                    if (!clipMetadata.userId) return; // تخطي التسجيل في قاعدة البيانات للزوار
+                    if (!clipMetadata.userId) return;
                     const insertData = {
                         user_id: clipMetadata.userId,
                         name: clipMetadata.name,
