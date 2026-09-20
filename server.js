@@ -120,7 +120,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الخطط بدقة وفقاً لتسعير الموقع الرسمي
+// 6. تعريف صلاحيات الخطط بدقة وفقاً للموقع الرسمي
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
@@ -145,7 +145,6 @@ const PLAN_PERMISSIONS = {
     }
 };
 
-// حساب المدة القصوى المسموحة حسب الجودة لباقة Pro
 function getMaxDurationForPro(quality, format) {
     if (format === 'mp3') return 2700; // 45 دقيقة للصوت
     if (quality === '4k' || quality === '2160p') return 900; // 15 دقيقة للـ 4K
@@ -158,7 +157,21 @@ function isAudioFormat(format) {
     return ['mp3', 'wav'].includes(format);
 }
 
-// دالة تحديد الخطة بناءً على حقول قاعدة البيانات: is_pro, is_admin, role, plan
+// دالة فك التوكن واستخراج معرّف المستخدم حتى لو كان منتهي الصلاحية
+function extractUserIdFromToken(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            return payload.sub || payload.id || null;
+        }
+    } catch (e) {
+        return null;
+    }
+    return null;
+}
+
+// دالة تحديد الخطة بناءً على حقول قاعدة البيانات
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
     if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
@@ -171,6 +184,7 @@ function resolveUserPlan(userRow) {
 
 // جلب بروفايل المستخدم من جدول users أو profiles
 async function getUserProfileData(userId) {
+    if (!userId) return null;
     let { data: userRow } = await supabase
         .from('users')
         .select('*')
@@ -348,13 +362,14 @@ app.get('/user-status', async (req, res) => {
             return res.status(401).json({ message: 'Unauthorized' });
         }
         const token = authHeader.split(' ')[1];
+        let userId = extractUserIdFromToken(token);
 
-        const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-        if (userError || !user) {
-            return res.status(403).json({ message: 'Forbidden: Invalid token' });
+        if (!userId) {
+            const { data: { user } } = await supabase.auth.getUser(token);
+            if (user) userId = user.id;
         }
 
-        const userRow = await getUserProfileData(user.id);
+        const userRow = await getUserProfileData(userId);
         const plan = resolveUserPlan(userRow);
 
         res.json({
@@ -402,26 +417,34 @@ app.get('/progress/:jobId', (req, res) => {
 });
 
 // =============================================================
-// مسار إنشاء وقص الفيديو (متوافق مع باقات الموقع و is_pro بدقة)
+// مسار إنشاء وقص الفيديو مع التعرف الذكي على المستخدم
 // =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
-        let user = null;
+        let userId = null;
         let userPlan = 'free';
 
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
-            try {
-                const { data: { user: authUser } } = await supabase.auth.getUser(token);
-                if (authUser) {
-                    user = authUser;
-                    const userRow = await getUserProfileData(user.id);
-                    userPlan = resolveUserPlan(userRow);
-                }
-            } catch (authErr) {
-                console.warn('[Auth Note] Operating in Guest Mode');
+            
+            // 1. محاولة استخراج المستخدم من التوكن مباشرة
+            userId = extractUserIdFromToken(token);
+            
+            // 2. محاولة احتياطية عبر supabase auth
+            if (!userId) {
+                try {
+                    const { data: { user: authUser } } = await supabase.auth.getUser(token);
+                    if (authUser) userId = authUser.id;
+                } catch (e) {}
+            }
+
+            // 3. قراءة خطة المستخدم من قاعدة البيانات بواسطة Service Key
+            if (userId) {
+                const userRow = await getUserProfileData(userId);
+                userPlan = resolveUserPlan(userRow);
+                console.log(`👤 [Auth Identity] User ID: ${userId} | Plan: ${userPlan.toUpperCase()}`);
             }
         }
 
@@ -460,17 +483,16 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        console.log(`[Processing] User: ${user ? user.id : 'Guest'} | Plan: ${userPlan.toUpperCase()} | Quality: ${quality} | Duration: ${duration}s`);
+        console.log(`🎬 [Processing] User: ${userId || 'Guest'} | Plan: ${userPlan.toUpperCase()} | Quality: ${quality} | Duration: ${duration}s`);
 
         jobId = crypto.randomBytes(16).toString('hex');
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         
-        // تسمية الملف ببادئة الموقع
         const cleanTitle = sanitizeFilename(title);
         const finalFilename = `(cuttertube.com) ${cleanTitle}.${format}`;
 
         const clipMetadata = { 
-            userId: user ? user.id : null, 
+            userId: userId, 
             name: title, 
             videoUrl, 
             startTime, 
@@ -496,7 +518,6 @@ app.post('/create-clip', async (req, res) => {
 
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // اختيار أفضل صيغة للفيديو حتى الجودة المطلوبة (1080p, 1440p, 4K)
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
@@ -567,7 +588,7 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // FFmpeg Render Pipeline
+            // معالجة الفيديو محلياً
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
