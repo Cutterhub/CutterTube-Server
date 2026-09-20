@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام (بالترتيب الصحيح)
+// 1. تحديد المنفذ والرابط العام
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -20,7 +20,7 @@ const PUBLIC_API_URL = process.env.PUBLIC_API_URL ||
                        (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`);
 
 // =============================================================
-// 2. إعدادات CORS الديناميكية (من متغيرات البيئة)
+// 2. إعدادات CORS الديناميكية
 // =============================================================
 const allowedOrigins = (
     process.env.CORS_ORIGINS ||
@@ -32,7 +32,6 @@ const allowedOrigins = (
 
 app.use(cors({
     origin(origin, callback) {
-        // السماح بالطلبات بدون Origin (مثل Postman/سيرفر داخلي) أو النطاقات المعتمدة أو إضافات Chrome
         if (!origin || allowedOrigins.includes(origin) || origin.startsWith('chrome-extension://')) {
             return callback(null, true);
         }
@@ -43,7 +42,6 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// معالجة كافة طلبات الـ Preflight
 app.options('*', cors());
 
 // =============================================================
@@ -65,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع (متوافق مع Railway Volume والتطوير المحلي)
+// 4. مسار مجلد المقاطع
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 
@@ -74,19 +72,17 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وإعداد الكوكيز (Linux / Railway)
+// 5. مسارات الأدوات وإعداد الكوكيز
 // =============================================================
 const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
-// ملف الكوكيز لتجاوز تحقق يوتيوب
 const COOKIES_PATH = path.join(os.tmpdir(), 'youtube_cookies.txt');
 
 if (process.env.YOUTUBE_COOKIES) {
     try {
         let cookieData = process.env.YOUTUBE_COOKIES.trim();
-        // إذا كان مشفراً بـ Base64 يتم فك تشفيره تلقائياً
         if (!cookieData.includes('\t') && !cookieData.includes('\n')) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
@@ -97,8 +93,6 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
-// دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز وعملاء يوتيوب المتوافقة
-// دالة مساعدة لاختيار العميل الصحيح المتوافق مع الكوكيز
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
@@ -111,12 +105,10 @@ function getBaseYtDlpArgs(extraArgs = []) {
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
     if (hasCookies) {
-        // عند وجود الكوكيز نستخدم عميل الويب المتوافق معها
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
         args.push('--extractor-args', 'youtube:player_client=web,default');
     } else {
-        // في حال عدم وجود كوكيز نستخدم عملاء الهواتف
         args.push('--extractor-args', 'youtube:player_client=android,ios,web');
     }
 
@@ -125,7 +117,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
 const jobs = {};
 
-// --- START: تعريف صلاحيات الخطط (مصدر الحقيقة الوحيد) ---
+// --- تعريف صلاحيات الخطط ---
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
@@ -152,7 +144,6 @@ const PLAN_PERMISSIONS = {
         allowed_features: ['144p_quality', '240p_quality', '360p_quality', '480p_quality', '720p_quality', '1080p_quality', '1440p_quality', '2160p_quality', 'mp4_format', 'mp3_format', 'webm_format', 'gif_format', 'wav_format', 'mkv_format', 'mov_format', 'avi_format']
     }
 };
-// --- END: تعريف صلاحيات الخطط ---
 
 function isAudioFormat(format) {
     return ['mp3', 'wav'].includes(format);
@@ -173,6 +164,26 @@ function calculateCreditCost(durationInSeconds, quality, format) {
     return Math.max(1, Math.ceil(calculatedCost));
 }
 
+// دالة مساعدة للبحث في جدول users أو profiles
+async function getUserProfileData(userId) {
+    let { data: userRow } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+
+    if (!userRow) {
+        const { data: profileRow } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
+        userRow = profileRow;
+    }
+
+    return userRow;
+}
+
 // مسار فحص صحة السيرفر
 app.get('/', (req, res) => {
     res.json({ 
@@ -185,7 +196,6 @@ app.get('/', (req, res) => {
     });
 });
 
-// مسار فحص الصحة لـ Railway Health Check
 app.get('/health', (req, res) => {
     res.status(200).json({
         status: 'ok',
@@ -223,7 +233,7 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-//               Endpoint to get Video Metadata (Subs & Audio)
+// Endpoint to get Video Metadata (Subs & Audio)
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -347,19 +357,11 @@ app.get('/user-status', async (req, res) => {
             return res.status(403).json({ message: 'Forbidden: Invalid token' });
         }
 
-        const { data: profile, error: profileError } = await supabase
-            .from('profiles')
-            .select('plan, credits')
-            .eq('id', user.id)
-            .single();
-
-        if (profileError || !profile) {
-            return res.status(500).json({ message: 'Could not retrieve user profile.' });
-        }
+        const profile = await getUserProfileData(user.id);
 
         res.json({
-            subscription: profile.plan || 'Free',
-            credits: profile.credits || 0
+            subscription: profile?.plan || profile?.subscription || 'Free',
+            credits: profile?.credits !== undefined ? profile.credits : 100
         });
 
     } catch (error) {
@@ -410,10 +412,10 @@ app.post('/create-clip', async (req, res) => {
         const { data: { user }, error: userError } = await supabase.auth.getUser(token);
         if (userError || !user) return res.status(403).json({ message: 'Forbidden: Invalid token.' });
 
-        const { data: profile, error: profileError } = await supabase.from('profiles').select('plan, credits').eq('id', user.id).single();
-        if (profileError || !profile) return res.status(500).json({ message: 'Could not retrieve user profile.' });
+        const profile = await getUserProfileData(user.id);
 
-        const userPlan = (profile.plan || 'free').toLowerCase();
+        const userPlan = (profile?.plan || profile?.subscription || 'free').toLowerCase();
+        const currentCredits = profile?.credits !== undefined ? profile.credits : 100;
 
         const permissions = PLAN_PERMISSIONS[userPlan] || PLAN_PERMISSIONS['free'];
         const { videoId, startTime, endTime, format, quality, title = 'clip', mute, audioTrackId, subtitleTrackId } = req.body;
@@ -430,15 +432,17 @@ app.post('/create-clip', async (req, res) => {
         }
 
         const requiredCredits = calculateCreditCost(duration, quality, format);
-        if (profile.credits < requiredCredits) {
-            return res.status(402).json({ message: `Insufficient credits.`, details: { required: requiredCredits, available: profile.credits } });
+        if (currentCredits < requiredCredits) {
+            return res.status(402).json({ message: `Insufficient credits.`, details: { required: requiredCredits, available: currentCredits } });
         }
 
-        const newCredits = profile.credits - requiredCredits;
-        const { error: updateError } = await supabase.from('profiles').update({ credits: newCredits }).eq('id', user.id);
-        if (updateError) {
-            console.error(`[Credit Error] Failed to deduct credits for user ${user.id}:`, updateError);
-            return res.status(500).json({ message: 'Failed to update credit balance.' });
+        const newCredits = Math.max(0, currentCredits - requiredCredits);
+
+        try {
+            await supabase.from('users').update({ credits: newCredits }).eq('id', user.id);
+            await supabase.from('profiles').update({ credits: newCredits }).eq('id', user.id);
+        } catch (e) {
+            console.warn('[Credits Update Warning]', e);
         }
 
         console.log(`[Credits] ✅ Deducted ${requiredCredits} credits for user ${user.id}. New balance: ${newCredits}`);
@@ -571,7 +575,7 @@ app.post('/create-clip', async (req, res) => {
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
                 handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata);
-            } else { // Video formats
+            } else {
                 let ffmpegArgs = [];
                 ffmpegArgs.push('-user_agent', USER_AGENT);
                 ffmpegArgs.push('-ss', startTime.toString(), '-i', videoStreamUrl);
@@ -622,7 +626,7 @@ app.post('/create-clip', async (req, res) => {
         if (jobId && jobs[jobId]) {
             delete jobs[jobId];
         }
-        res.status(500).json({ message: "A critical server error occurred." });
+        res.status(500).json({ message: "A critical server error occurred.", error: e.message });
     }
 });
 
