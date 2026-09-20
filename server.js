@@ -98,19 +98,28 @@ if (process.env.YOUTUBE_COOKIES) {
 }
 
 // دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز وعملاء يوتيوب المتوافقة
+// دالة مساعدة لاختيار العميل الصحيح المتوافق مع الكوكيز
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
         '--no-warnings',
         '--no-check-certificates',
-        '--prefer-free-formats',
-        '--extractor-args', 'youtube:player_client=ios,android,web_embedded'
+        '--js-runtimes', 'node'
     ];
-    if (fs.existsSync(COOKIES_PATH)) {
-        args.push('--cookies', COOKIES_PATH);
-    } else if (fs.existsSync(path.join(__dirname, 'cookies.txt'))) {
-        args.push('--cookies', path.join(__dirname, 'cookies.txt'));
+
+    const localCookieFile = path.join(__dirname, 'cookies.txt');
+    const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
+
+    if (hasCookies) {
+        // عند وجود الكوكيز نستخدم عميل الويب المتوافق معها
+        const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
+        args.push('--cookies', cookieToUse);
+        args.push('--extractor-args', 'youtube:player_client=web,default');
+    } else {
+        // في حال عدم وجود كوكيز نستخدم عملاء الهواتف
+        args.push('--extractor-args', 'youtube:player_client=android,ios,web');
     }
+
     return [...args, ...extraArgs];
 }
 
