@@ -405,26 +405,33 @@ app.get('/progress/:jobId', (req, res) => {
 });
 
 // =============================================================
-// مسار إنشاء وقص الفيديو عبر التحميل المباشر للقسم
+// مسار إنشاء وقص الفيديو (يدعم الأعضاء المسجلين والزوار Guests)
 // =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            return res.status(401).json({ message: 'Unauthorized: No token provided.' });
+        let user = null;
+        let userPlan = 'free';
+        let currentCredits = 100;
+        let isGuest = true;
+
+        // التحقق مما إذا كان المستخدم مسجل دخول
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.split(' ')[1];
+            try {
+                const { data: { user: authUser } } = await supabase.auth.getUser(token);
+                if (authUser) {
+                    user = authUser;
+                    isGuest = false;
+                    const profile = await getUserProfileData(user.id);
+                    userPlan = (profile?.plan || profile?.subscription || 'free').toLowerCase();
+                    currentCredits = profile?.credits !== undefined ? profile.credits : 100;
+                }
+            } catch (authErr) {
+                console.warn('[Auth Note] Processing request in Guest Mode:', authErr.message);
+            }
         }
-        const token = authHeader.split(' ')[1];
-
-        const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-        if (userError || !user) {
-            return res.status(403).json({ message: 'Forbidden: Invalid token.' });
-        }
-
-        const profile = await getUserProfileData(user.id);
-
-        const userPlan = (profile?.plan || profile?.subscription || 'free').toLowerCase();
-        const currentCredits = profile?.credits !== undefined ? profile.credits : 100;
 
         const permissions = PLAN_PERMISSIONS[userPlan] || PLAN_PERMISSIONS['free'];
         const { videoId, startTime, endTime, format, quality, title = 'clip', mute, audioTrackId, subtitleTrackId } = req.body;
@@ -441,31 +448,43 @@ app.post('/create-clip', async (req, res) => {
         }
 
         const requiredCredits = calculateCreditCost(duration, quality, format);
-        if (currentCredits < requiredCredits) {
-            return res.status(402).json({ message: `Insufficient credits.`, details: { required: requiredCredits, available: currentCredits } });
+
+        // خصم الرصيد فقط في حال كان المستخدم مسجلاً
+        if (!isGuest && user) {
+            if (currentCredits < requiredCredits) {
+                return res.status(402).json({ message: `Insufficient credits.`, details: { required: requiredCredits, available: currentCredits } });
+            }
+            const newCredits = Math.max(0, currentCredits - requiredCredits);
+            try {
+                await supabase.from('users').update({ credits: newCredits }).eq('id', user.id);
+                await supabase.from('profiles').update({ credits: newCredits }).eq('id', user.id);
+            } catch (e) {
+                console.warn('[Credits Update Warning]', e);
+            }
+            console.log(`[Credits] ✅ Deducted ${requiredCredits} credits for user ${user.id}. New balance: ${newCredits}`);
+        } else {
+            console.log(`[Guest Mode] ✅ Processing free clip for guest visitor (Duration: ${duration}s).`);
         }
-
-        const newCredits = Math.max(0, currentCredits - requiredCredits);
-
-        try {
-            await supabase.from('users').update({ credits: newCredits }).eq('id', user.id);
-            await supabase.from('profiles').update({ credits: newCredits }).eq('id', user.id);
-        } catch (e) {
-            console.warn('[Credits Update Warning]', e);
-        }
-
-        console.log(`[Credits] ✅ Deducted ${requiredCredits} credits for user ${user.id}. New balance: ${newCredits}`);
 
         jobId = crypto.randomBytes(16).toString('hex');
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         const finalFilename = `${sanitizeFilename(title)}.${format}`;
 
-        const clipMetadata = { userId: user.id, name: title, videoUrl, startTime, endTime, quality, format, cost: requiredCredits };
+        const clipMetadata = { 
+            userId: user ? user.id : null, 
+            name: title, 
+            videoUrl, 
+            startTime, 
+            endTime, 
+            quality, 
+            format, 
+            cost: requiredCredits 
+        };
 
         jobs[jobId] = { status: 'starting', progress: 0, tempFile: `${jobId}.${format}`, finalFile: finalFilename };
         res.status(202).json({ success: true, jobId });
 
-        console.log(`[Job ${jobId}] Starting download section for user ${user.id}.`);
+        console.log(`[Job ${jobId}] Starting download section.`);
 
         const totalDuration = endTime - startTime;
         const isGif = format === 'gif';
@@ -473,7 +492,6 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // صيغة التحميل المباشر للقسم
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
@@ -482,7 +500,6 @@ app.post('/create-clip', async (req, res) => {
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
         const finalOutputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
 
-        // تحميل الجزء المحدد فقط عبر yt-dlp مع الكوكيز
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
@@ -506,7 +523,6 @@ app.post('/create-clip', async (req, res) => {
         });
 
         ytdlpProcess.on('close', async (code) => {
-            // البحث عن الملف المحمّل الفعلي في المجلد أياً كان امتداده
             const foundFiles = fs.readdirSync(CLIPS_DIR).filter(f => f.startsWith(rawClipPrefix) && !f.endsWith('.part'));
             const actualRawPath = foundFiles.length > 0 ? path.join(CLIPS_DIR, foundFiles[0]) : null;
 
@@ -519,7 +535,6 @@ app.post('/create-clip', async (req, res) => {
             jobs[jobId].status = 'processing';
             jobs[jobId].progress = 50;
 
-            // تحميل ملف الترجمة إن طُلب
             let subPath = null;
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
                 console.log(`[Job ${jobId}] Fetching subtitles for lang: ${subtitleTrackId}`);
@@ -549,7 +564,6 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='ClipsCap.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // معالجة الفيديو محلياً عبر FFmpeg
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -670,13 +684,20 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
         if (code === 0 && fs.existsSync(path.join(CLIPS_DIR, job.tempFile))) {
             if (onCompleteCallback) onCompleteCallback();
 
+            // حفظ السجل فقط للمستخدم المسجل
             async function logClipToDatabase() {
                 try {
-                    const { error } = await supabase.from('clips').insert({
-                        user_id: clipMetadata.userId, name: clipMetadata.name, video_url: clipMetadata.videoUrl,
-                        start_time_seconds: Math.round(clipMetadata.startTime), end_time_seconds: Math.round(clipMetadata.endTime),
-                        quality: clipMetadata.quality, format: clipMetadata.format, cost: clipMetadata.cost
-                    });
+                    if (!clipMetadata.userId) return; // تخطي التسجيل في قاعدة البيانات للزوار
+                    const insertData = {
+                        user_id: clipMetadata.userId,
+                        name: clipMetadata.name,
+                        video_url: clipMetadata.videoUrl,
+                        start_time_seconds: Math.round(clipMetadata.startTime),
+                        end_time_seconds: Math.round(clipMetadata.endTime),
+                        quality: clipMetadata.quality,
+                        format: clipMetadata.format
+                    };
+                    const { error } = await supabase.from('clips').insert(insertData);
                     if (error) console.error(`[Job ${jobId}] ❌ DB Log Error:`, error.message);
                     else console.log(`[Job ${jobId}] ✅ DB Log Success.`);
                 } catch (dbError) { console.error(`[Job ${jobId}] ❌ Critical DB Log Error:`, dbError); }
