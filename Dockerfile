@@ -1,5 +1,5 @@
-# 1. استخدام صورة Node 20 خفيفة ومستقرة
-FROM node:20-bookworm-slim
+# 1. استخدام صورة Node 22 خفيفة ومستقرة
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
