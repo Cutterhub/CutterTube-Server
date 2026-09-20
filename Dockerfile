@@ -13,7 +13,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. تحميل وتثبيت أحدث إصدار من yt-dlp وإعطائه صلاحيات التنفيذ
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+# تحميل أحدث إصدار Nightly من yt-dlp لحل خطأ The page needs to be reloaded
+RUN curl -L https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod +x /usr/local/bin/yt-dlp
 
 # 4. نسخ ملفات الحزم أولاً للاستفادة من Docker Cache في سرعة البناء
