@@ -97,13 +97,14 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
-// دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز والمحاكاة
+// دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز وعميل يوتيوب الشامل
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
         '--no-warnings',
         '--no-check-certificates',
-        '--extractor-args', 'youtube:player_client=android,web'
+        '--prefer-free-formats',
+        '--extractor-args', 'youtube:player_client=default,web,mweb,ios'
     ];
     if (fs.existsSync(COOKIES_PATH)) {
         args.push('--cookies', COOKIES_PATH);
@@ -221,7 +222,7 @@ app.get('/video-metadata', async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // استخدام الدالة المجهزة بالكوكيز والمحاكاة
+    // استخدام الدالة المجهزة بالكوكيز والعميل الشامل
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
     const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
     
@@ -449,12 +450,14 @@ app.post('/create-clip', async (req, res) => {
         const isGif = format === 'gif';
         const videoQuality = isGif ? '720' : (quality || '720');
 
-        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]';
+        const targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
+        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio';
+
+        // اختيار الصيغ بمرونة ودعم التراجع التلقائي
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : `bestaudio/best`)
-            : `bestvideo[height<=?${parseInt(videoQuality.replace('p', ''))}][ext=mp4]+${baseAudio}/bestvideo+bestaudio/best`;
+            : `bestvideo[height<=${targetHeight}][ext=mp4]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/bestvideo+bestaudio/best`;
 
-        // استخدام دالة الكوكيز لتوليد روابط البث المباشر
         const ytdlpArgs = getBaseYtDlpArgs([videoUrl, '-f', formatSelection, '-g']);
         const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
         
@@ -482,7 +485,6 @@ app.post('/create-clip', async (req, res) => {
                 console.log(`[Job ${jobId}] Fetching subtitles for lang: ${subtitleTrackId}`);
                 const subFileBase = path.join(CLIPS_DIR, `sub_${jobId}`);
                 
-                // استخدام دالة الكوكيز لتحميل الترجمة
                 const subArgs = getBaseYtDlpArgs([
                     '--skip-download',
                     '--write-subs',
