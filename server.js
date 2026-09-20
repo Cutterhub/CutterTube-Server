@@ -42,6 +42,9 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// معالجة كافة طلبات الـ Preflight
+app.options('*', cors());
+
 // =============================================================
 // 3. التحقق من متغيرات Supabase
 // =============================================================
@@ -51,7 +54,14 @@ if (!supabaseUrl || !supabaseKey) {
     console.error("❌ CRITICAL ERROR: Supabase URL or Service Key is missing in .env file.");
     process.exit(1);
 }
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: {
+        persistSession: false
+    },
+    realtime: {
+        createSocket: () => null
+    }
+});
 
 // =============================================================
 // 4. مسار مجلد المقاطع (متوافق مع Railway Volume والتطوير المحلي)
@@ -176,8 +186,17 @@ app.get('/video-metadata', async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // Use yt-dlp to get metadata
-    const ytdlp = spawn(YTDLP_PATH, ['--user-agent', USER_AGENT, '--dump-json', '--js-runtime', 'node', videoUrl]);
+    // استخدام yt-dlp مع وسائط تخطي الحظر السحابي
+    const ytdlpArgs = [
+        '--user-agent', USER_AGENT,
+        '--no-warnings',
+        '--no-check-certificates',
+        '--extractor-args', 'youtube:player_client=android,web',
+        '--dump-json',
+        videoUrl
+    ];
+
+    const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
     let output = '';
     let errorOutput = '';
 
@@ -186,16 +205,18 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata] yt-dlp failed: ${errorOutput}`);
-            return res.status(500).json({ message: 'Failed to fetch video metadata.' });
+            console.error(`[Metadata] yt-dlp failed (code ${code}): ${errorOutput}`);
+            return res.status(500).json({ 
+                message: 'Failed to fetch video metadata.',
+                details: errorOutput || 'Unknown yt-dlp error'
+            });
         }
 
         try {
             const info = JSON.parse(output);
 
-            // Extract audio tracks
             const audioTracks = [];
-            const languageMap = {}; // language_code -> {id, name, tbr}
+            const languageMap = {};
 
             if (info.formats) {
                 console.log(`[Metadata] Analyzing ${info.formats.length} formats for video: ${videoId}`);
@@ -244,13 +265,12 @@ app.get('/video-metadata', async (req, res) => {
                 audioTracks.push(languageMap[key]);
             }
 
-            // Extract subtitles
             const subtitles = [];
             if (info.subtitles) {
                 for (const lang in info.subtitles) {
                     subtitles.push({
                         id: lang,
-                        name: info.subtitles[lang][0].name || lang,
+                        name: info.subtitles[lang][0]?.name || lang,
                         is_auto: false
                     });
                 }
@@ -259,7 +279,7 @@ app.get('/video-metadata', async (req, res) => {
                 for (const lang in info.automatic_captions) {
                     subtitles.push({
                         id: lang,
-                        name: (info.automatic_captions[lang][0].name || lang) + ' (auto)',
+                        name: (info.automatic_captions[lang][0]?.name || lang) + ' (auto)',
                         is_auto: true
                     });
                 }
@@ -272,11 +292,10 @@ app.get('/video-metadata', async (req, res) => {
 
         } catch (e) {
             console.error(`[Metadata] Failed to parse JSON: ${e}`);
-            res.status(500).json({ message: 'Failed to parse video metadata.' });
+            res.status(500).json({ message: 'Failed to parse video metadata.', details: e.message });
         }
     });
 });
-
 
 app.get('/user-status', async (req, res) => {
     try {
@@ -311,7 +330,6 @@ app.get('/user-status', async (req, res) => {
         res.status(500).json({ message: "A critical server error occurred." });
     }
 });
-
 
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
@@ -403,13 +421,23 @@ app.post('/create-clip', async (req, res) => {
         const isGif = format === 'gif';
         const videoQuality = isGif ? '720' : (quality || '720');
 
-        // Build format selection string
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]';
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : `bestaudio/best`)
             : `bestvideo[height<=?${parseInt(videoQuality.replace('p', ''))}][ext=mp4]+${baseAudio}/bestvideo+bestaudio/best`;
 
-        const ytdlp = spawn(YTDLP_PATH, ['--user-agent', USER_AGENT, videoUrl, '-f', formatSelection, '-g', '--js-runtime', 'node']);
+        // إضافة وسائط تخطي الحظر السحابي هنا أيضاً
+        const ytdlpArgs = [
+            '--user-agent', USER_AGENT,
+            '--no-warnings',
+            '--no-check-certificates',
+            '--extractor-args', 'youtube:player_client=android,web',
+            videoUrl,
+            '-f', formatSelection,
+            '-g'
+        ];
+
+        const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
         let streamUrls = '';
         ytdlp.stdout.on('data', (data) => streamUrls += data.toString());
         ytdlp.stderr.on('data', (data) => console.error(`[Job ${jobId}] YTDLP Stderr:`, data.toString()));
@@ -429,17 +457,18 @@ app.post('/create-clip', async (req, res) => {
             const videoStreamUrl = urls[0];
             const audioStreamUrl = isAudioFormat(format) ? null : (urls.length > 1 ? urls[1] : null);
 
-            // Subtitles handling
             let subPath = null;
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
                 console.log(`[Job ${jobId}] Fetching subtitles for lang: ${subtitleTrackId}`);
                 const subFileBase = path.join(CLIPS_DIR, `sub_${jobId}`);
                 const subProcess = spawn(YTDLP_PATH, [
                     '--user-agent', USER_AGENT,
+                    '--no-warnings',
+                    '--no-check-certificates',
+                    '--extractor-args', 'youtube:player_client=android,web',
                     '--skip-download',
                     '--write-subs',
                     '--write-auto-subs',
-                    '--js-runtime', 'node',
                     '--sub-lang', subtitleTrackId,
                     '--convert-subs', 'srt',
                     '-o', subFileBase,
