@@ -119,54 +119,57 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
 const jobs = {};
 
-// --- تعريف صلاحيات الخطط ---
+// =============================================================
+// 6. تعريف صلاحيات الخطط بدقة وفقاً لتسعير الموقع الرسمي
+// =============================================================
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 60,
+        max_duration: 120, // دقيقتان
         watermark: true,
-        allowed_features: ['144p_quality', '240p_quality', '360p_quality', '480p_quality', 'mp4_format', 'mp3_format']
+        allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
+        allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 90,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
-        allowed_features: ['144p_quality', '240p_quality', '360p_quality', '480p_quality', '720p_quality', '1080p_quality', 'mp4_format', 'mp3_format', 'webm_format', 'gif_format']
-    },
-    advanced: {
-        plan_name: 'Advanced',
-        max_duration: 120,
-        watermark: false,
-        allowed_features: ['144p_quality', '240p_quality', '360p_quality', '480p_quality', '720p_quality', '1080p_quality', '1440p_quality', '2160p_quality', 'mp4_format', 'mp3_format', 'webm_format', 'gif_format', 'wav_format', 'mkv_format']
+        allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
+        allowed_formats: ['mp4', 'mp3']
     },
     pro: {
         plan_name: 'Pro',
-        max_duration: 180,
         watermark: false,
-        allowed_features: ['144p_quality', '240p_quality', '360p_quality', '480p_quality', '720p_quality', '1080p_quality', '1440p_quality', '2160p_quality', 'mp4_format', 'mp3_format', 'webm_format', 'gif_format', 'wav_format', 'mkv_format', 'mov_format', 'avi_format']
+        allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p', '4k'],
+        allowed_formats: ['mp4', 'mp3', 'webm', 'gif', 'wav', 'mkv', 'mov', 'avi']
     }
 };
+
+// حساب المدة القصوى المسموحة حسب الجودة لباقة Pro
+function getMaxDurationForPro(quality, format) {
+    if (format === 'mp3') return 2700; // 45 دقيقة للصوت
+    if (quality === '4k' || quality === '2160p') return 900; // 15 دقيقة للـ 4K
+    if (quality === '1440p' || quality === '1080p') return 1800; // 30 دقيقة للـ 1080p/1440p
+    if (quality === '720p') return 3600; // ساعة للـ 720p
+    return 7200; // ساعتان لـ 480p وما دون
+}
 
 function isAudioFormat(format) {
     return ['mp3', 'wav'].includes(format);
 }
 
-function calculateCreditCost(durationInSeconds, quality, format) {
-    const DURATION_BLOCK_SIZE = 30;
-    const BASE_DURATION_COST = Math.ceil(durationInSeconds / DURATION_BLOCK_SIZE);
-
-    const QUALITY_MULTIPLIERS = {
-        '144p': 0.8, '240p': 0.8, '360p': 0.9, '480p': 0.9,
-        '720p': 1, '1080p': 1.5, '1440p': 2, '2160p': 3, 'default': 1
-    };
-    const FORMAT_MULTIPLIERS = { 'gif': 2.5, 'mp3': 0.7, 'wav': 0.7 };
-
-    let multiplier = FORMAT_MULTIPLIERS[format] || QUALITY_MULTIPLIERS[quality] || QUALITY_MULTIPLIERS['default'];
-    const calculatedCost = BASE_DURATION_COST * multiplier;
-    return Math.max(1, Math.ceil(calculatedCost));
+// دالة تحديد الخطة بناءً على حقول قاعدة البيانات: is_pro, is_admin, role, plan
+function resolveUserPlan(userRow) {
+    if (!userRow) return 'free';
+    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
+    if (userRow.is_pro === true) return 'pro';
+    if (userRow.plan) return userRow.plan.toLowerCase();
+    if (userRow.subscription) return userRow.subscription.toLowerCase();
+    if (userRow.role === 'basic') return 'basic';
+    return 'free';
 }
 
-// دالة مساعدة للبحث في جدول users أو profiles
+// جلب بروفايل المستخدم من جدول users أو profiles
 async function getUserProfileData(userId) {
     let { data: userRow } = await supabase
         .from('users')
@@ -186,7 +189,7 @@ async function getUserProfileData(userId) {
     return userRow;
 }
 
-// مسار فحص صحة السيرفر (White-labeled)
+// مسار فحص صحة السيرفر
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -232,7 +235,7 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// Endpoint to get Video Metadata (Subs & Audio)
+// Endpoint to get Video Metadata
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -351,11 +354,13 @@ app.get('/user-status', async (req, res) => {
             return res.status(403).json({ message: 'Forbidden: Invalid token' });
         }
 
-        const profile = await getUserProfileData(user.id);
+        const userRow = await getUserProfileData(user.id);
+        const plan = resolveUserPlan(userRow);
 
         res.json({
-            subscription: profile?.plan || profile?.subscription || 'Free',
-            credits: profile?.credits !== undefined ? profile.credits : 100
+            subscription: plan.toUpperCase(),
+            is_pro: plan === 'pro',
+            is_admin: userRow?.is_admin === true || userRow?.role === 'admin'
         });
 
     } catch (error) {
@@ -397,7 +402,7 @@ app.get('/progress/:jobId', (req, res) => {
 });
 
 // =============================================================
-// مسار إنشاء وقص الفيديو
+// مسار إنشاء وقص الفيديو (متوافق مع باقات الموقع و is_pro بدقة)
 // =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
@@ -405,8 +410,6 @@ app.post('/create-clip', async (req, res) => {
         const authHeader = req.headers.authorization;
         let user = null;
         let userPlan = 'free';
-        let currentCredits = 100;
-        let isGuest = true;
 
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
@@ -414,51 +417,55 @@ app.post('/create-clip', async (req, res) => {
                 const { data: { user: authUser } } = await supabase.auth.getUser(token);
                 if (authUser) {
                     user = authUser;
-                    isGuest = false;
-                    const profile = await getUserProfileData(user.id);
-                    userPlan = (profile?.plan || profile?.subscription || 'free').toLowerCase();
-                    currentCredits = profile?.credits !== undefined ? profile.credits : 100;
+                    const userRow = await getUserProfileData(user.id);
+                    userPlan = resolveUserPlan(userRow);
                 }
             } catch (authErr) {
-                console.warn('[Auth Note] Processing in Guest Mode');
+                console.warn('[Auth Note] Operating in Guest Mode');
             }
         }
 
         const permissions = PLAN_PERMISSIONS[userPlan] || PLAN_PERMISSIONS['free'];
-        const { videoId, startTime, endTime, format, quality, title = 'clip', mute, audioTrackId, subtitleTrackId } = req.body;
+        const { videoId, startTime, endTime, format, quality = '720p', title = 'clip', mute, audioTrackId, subtitleTrackId } = req.body;
         const duration = endTime - startTime;
 
-        if (duration > permissions.max_duration + 0.1) {
-            return res.status(403).json({ message: `Clip duration (${duration.toFixed(1)}s) exceeds your plan's limit of ${permissions.max_duration}s.` });
-        }
-        if (!isAudioFormat(format) && format !== 'gif' && !permissions.allowed_features.includes(`${quality}_quality`)) {
-            return res.status(403).json({ message: `The selected quality (${quality}) is not available on your plan.` });
-        }
-        if (!permissions.allowed_features.includes(`${format}_format`)) {
-            return res.status(403).json({ message: `The selected format (${format}) is not available on your plan.` });
+        const cleanQuality = quality.toLowerCase().replace('p', '') + 'p';
+        const is4k = quality.toLowerCase() === '4k' || cleanQuality === '2160p';
+
+        // 1. التحقق من المدة المسموحة
+        let maxAllowedDuration = permissions.max_duration;
+        if (userPlan === 'pro') {
+            maxAllowedDuration = getMaxDurationForPro(is4k ? '4k' : cleanQuality, format);
         }
 
-        const requiredCredits = calculateCreditCost(duration, quality, format);
-
-        if (!isGuest && user) {
-            if (currentCredits < requiredCredits) {
-                return res.status(402).json({ message: `Insufficient credits.`, details: { required: requiredCredits, available: currentCredits } });
-            }
-            const newCredits = Math.max(0, currentCredits - requiredCredits);
-            try {
-                await supabase.from('users').update({ credits: newCredits }).eq('id', user.id);
-                await supabase.from('profiles').update({ credits: newCredits }).eq('id', user.id);
-            } catch (e) {
-                console.warn('[Credits Update Warning]', e);
-            }
-            console.log(`[Credits] Deducted ${requiredCredits} credits for user ${user.id}.`);
-        } else {
-            console.log(`[Guest Mode] Processing clip for guest visitor.`);
+        if (duration > maxAllowedDuration + 0.1) {
+            const maxMins = Math.round(maxAllowedDuration / 60);
+            return res.status(403).json({ 
+                message: `Clip duration (${duration.toFixed(1)}s) exceeds your ${permissions.plan_name} plan limit (${maxMins} min) for ${quality}.` 
+            });
         }
+
+        // 2. التحقق من الجودة المسموحة
+        const qualityToCheck = is4k ? '4k' : cleanQuality;
+        if (!isAudioFormat(format) && format !== 'gif' && !permissions.allowed_qualities.includes(qualityToCheck) && !permissions.allowed_qualities.includes(cleanQuality)) {
+            return res.status(403).json({ 
+                message: `The selected quality (${quality}) is not available on the ${permissions.plan_name} plan. Upgrade to access it.` 
+            });
+        }
+
+        // 3. التحقق من الصيغة المسموحة
+        if (!permissions.allowed_formats.includes(format.toLowerCase())) {
+            return res.status(403).json({ 
+                message: `The selected format (${format}) is not available on the ${permissions.plan_name} plan.` 
+            });
+        }
+
+        console.log(`[Processing] User: ${user ? user.id : 'Guest'} | Plan: ${userPlan.toUpperCase()} | Quality: ${quality} | Duration: ${duration}s`);
 
         jobId = crypto.randomBytes(16).toString('hex');
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         
+        // تسمية الملف ببادئة الموقع
         const cleanTitle = sanitizeFilename(title);
         const finalFilename = `(cuttertube.com) ${cleanTitle}.${format}`;
 
@@ -470,20 +477,26 @@ app.post('/create-clip', async (req, res) => {
             endTime, 
             quality, 
             format, 
-            cost: requiredCredits 
+            plan: userPlan 
         };
 
         jobs[jobId] = { status: 'starting', progress: 0, tempFile: `${jobId}.${format}`, finalFile: finalFilename };
         res.status(202).json({ success: true, jobId });
 
-        console.log(`[Job ${jobId}] Starting video processing.`);
-
         const totalDuration = endTime - startTime;
         const isGif = format === 'gif';
         const videoQuality = isGif ? '720' : (quality || '720');
-        const targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
+        
+        let targetHeight = 720;
+        if (is4k) {
+            targetHeight = 2160;
+        } else {
+            targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
+        }
+
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
+        // اختيار أفضل صيغة للفيديو حتى الجودة المطلوبة (1080p, 1440p, 4K)
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
@@ -554,6 +567,7 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
+            // FFmpeg Render Pipeline
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -706,7 +720,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
 }
 
 // =============================================================
-// 6. تشغيل السيرفر على جميع الواجهات 0.0.0.0
+// 7. تشغيل السيرفر على جميع الواجهات 0.0.0.0
 // =============================================================
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ CutterTube Server is running on port ${PORT}`);
