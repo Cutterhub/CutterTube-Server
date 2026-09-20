@@ -97,14 +97,14 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
-// دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز وعميل يوتيوب الشامل
+// دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز وعملاء يوتيوب المتوافقة
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
         '--no-warnings',
         '--no-check-certificates',
         '--prefer-free-formats',
-        '--extractor-args', 'youtube:player_client=default,web,mweb,ios'
+        '--extractor-args', 'youtube:player_client=ios,android,web_embedded'
     ];
     if (fs.existsSync(COOKIES_PATH)) {
         args.push('--cookies', COOKIES_PATH);
@@ -222,7 +222,6 @@ app.get('/video-metadata', async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // استخدام الدالة المجهزة بالكوكيز والعميل الشامل
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
     const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
     
@@ -453,7 +452,6 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio';
 
-        // اختيار الصيغ بمرونة ودعم التراجع التلقائي
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : `bestaudio/best`)
             : `bestvideo[height<=${targetHeight}][ext=mp4]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/bestvideo+bestaudio/best`;
