@@ -87,9 +87,9 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
-        console.log('🍪 تم تحميل ملف الكوكيز بنجاح لتخطي حظر يوتيوب.');
+        console.log('🍪 Session credentials loaded successfully.');
     } catch (err) {
-        console.error('❌ خطأ في معالجة متغير YOUTUBE_COOKIES:', err);
+        console.error('❌ Credentials processing error:', err);
     }
 }
 
@@ -119,6 +119,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
 const jobs = {};
 
+// --- تعريف صلاحيات الخطط ---
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
@@ -165,6 +166,7 @@ function calculateCreditCost(durationInSeconds, quality, format) {
     return Math.max(1, Math.ceil(calculatedCost));
 }
 
+// دالة مساعدة للبحث في جدول users أو profiles
 async function getUserProfileData(userId) {
     let { data: userRow } = await supabase
         .from('users')
@@ -184,14 +186,13 @@ async function getUserProfileData(userId) {
     return userRow;
 }
 
+// مسار فحص صحة السيرفر (White-labeled)
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
-        service: 'CutterTube Clip Server', 
-        public_url: PUBLIC_API_URL,
-        ytdlp: YTDLP_PATH, 
-        ffmpeg: FFMPEG_PATH,
-        cookies_loaded: fs.existsSync(COOKIES_PATH)
+        service: 'CutterTube Processing API', 
+        version: '1.0.0',
+        timestamp: new Date().toISOString()
     });
 });
 
@@ -213,8 +214,7 @@ app.get('/download/:tempFilename/:finalFilename', (req, res) => {
             res.download(filePath, decodedFinalFilename, (err) => {
                 if (err) console.error("[Download] Error sending file:", err);
                 fs.unlink(filePath, (unlinkErr) => {
-                    if (unlinkErr) console.error("[Download] Error deleting temp file:", unlinkErr);
-                    else console.log(`[Download] Temp file ${tempFilename} deleted.`);
+                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
                 });
             });
         } else {
@@ -231,6 +231,9 @@ function sanitizeFilename(name) {
     return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
 }
 
+// =============================================================
+// Endpoint to get Video Metadata (Subs & Audio)
+// =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
@@ -248,10 +251,9 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata] yt-dlp failed (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata] Extraction failed (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
-                message: 'Failed to fetch video metadata.',
-                details: errorOutput || 'Unknown yt-dlp error'
+                message: 'Failed to fetch video details. Please try again later.'
             });
         }
 
@@ -330,8 +332,8 @@ app.get('/video-metadata', async (req, res) => {
             });
 
         } catch (e) {
-            console.error(`[Metadata] Failed to parse JSON: ${e}`);
-            res.status(500).json({ message: 'Failed to parse video metadata.', details: e.message });
+            console.error(`[Metadata] Failed to parse response: ${e}`);
+            res.status(500).json({ message: 'Failed to process video metadata.' });
         }
     });
 });
@@ -357,8 +359,8 @@ app.get('/user-status', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("[/user-status] CRITICAL ERROR:", error);
-        res.status(500).json({ message: "A critical server error occurred." });
+        console.error("[/user-status] Error:", error);
+        res.status(500).json({ message: "A server error occurred." });
     }
 });
 
@@ -394,6 +396,9 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
+// =============================================================
+// مسار إنشاء وقص الفيديو
+// =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
@@ -415,7 +420,7 @@ app.post('/create-clip', async (req, res) => {
                     currentCredits = profile?.credits !== undefined ? profile.credits : 100;
                 }
             } catch (authErr) {
-                console.warn('[Auth Note] Processing request in Guest Mode:', authErr.message);
+                console.warn('[Auth Note] Processing in Guest Mode');
             }
         }
 
@@ -446,17 +451,14 @@ app.post('/create-clip', async (req, res) => {
             } catch (e) {
                 console.warn('[Credits Update Warning]', e);
             }
-            console.log(`[Credits] ✅ Deducted ${requiredCredits} credits for user ${user.id}. New balance: ${newCredits}`);
+            console.log(`[Credits] Deducted ${requiredCredits} credits for user ${user.id}.`);
         } else {
-            console.log(`[Guest Mode] ✅ Processing free clip for guest visitor (Duration: ${duration}s).`);
+            console.log(`[Guest Mode] Processing clip for guest visitor.`);
         }
 
         jobId = crypto.randomBytes(16).toString('hex');
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         
-        // ==========================================
-        // تعديل اسم الملف ليحتوي على (cuttertube.com)
-        // ==========================================
         const cleanTitle = sanitizeFilename(title);
         const finalFilename = `(cuttertube.com) ${cleanTitle}.${format}`;
 
@@ -474,7 +476,7 @@ app.post('/create-clip', async (req, res) => {
         jobs[jobId] = { status: 'starting', progress: 0, tempFile: `${jobId}.${format}`, finalFile: finalFilename };
         res.status(202).json({ success: true, jobId });
 
-        console.log(`[Job ${jobId}] Starting download section.`);
+        console.log(`[Job ${jobId}] Starting video processing.`);
 
         const totalDuration = endTime - startTime;
         const isGif = format === 'gif';
@@ -504,12 +506,11 @@ app.post('/create-clip', async (req, res) => {
 
         ytdlpProcess.stderr.on('data', (data) => {
             ytdlpError += data.toString();
-            console.error(`[Job ${jobId}] YTDLP Stderr:`, data.toString());
         });
 
         ytdlpProcess.on('error', (err) => {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Failed to start yt-dlp process.';
+            jobs[jobId].error = 'Processing failed to initialize.';
         });
 
         ytdlpProcess.on('close', async (code) => {
@@ -518,7 +519,7 @@ app.post('/create-clip', async (req, res) => {
 
             if (code !== 0 || !actualRawPath || !fs.existsSync(actualRawPath)) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = 'Failed to download clip section from YouTube. ' + (ytdlpError.split('\n')[0] || '');
+                jobs[jobId].error = 'Failed to extract video section. Please try again.';
                 return;
             }
 
@@ -527,7 +528,6 @@ app.post('/create-clip', async (req, res) => {
 
             let subPath = null;
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
-                console.log(`[Job ${jobId}] Fetching subtitles for lang: ${subtitleTrackId}`);
                 const subFileBase = path.join(CLIPS_DIR, `sub_${jobId}`);
                 
                 const subArgs = getBaseYtDlpArgs([
@@ -552,7 +552,7 @@ app.post('/create-clip', async (req, res) => {
                 });
             }
 
-            const watermarkFilter = "drawtext=text='ClipsCap.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
+            const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
@@ -565,7 +565,7 @@ app.post('/create-clip', async (req, res) => {
                 paletteProcess.on('close', (paletteCode) => {
                     if (paletteCode !== 0) { 
                         jobs[jobId].status = 'failed'; 
-                        jobs[jobId].error = 'FFmpeg failed during palette generation.'; 
+                        jobs[jobId].error = 'Image optimization failed.'; 
                         if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                         return; 
                     }
@@ -638,11 +638,11 @@ app.post('/create-clip', async (req, res) => {
         });
 
     } catch (e) {
-        console.error("[/create-clip] CRITICAL ERROR:", e);
+        console.error("[/create-clip] Error:", e);
         if (jobId && jobs[jobId]) {
             delete jobs[jobId];
         }
-        res.status(500).json({ message: "A critical server error occurred.", error: e.message });
+        res.status(500).json({ message: "An error occurred while preparing your video." });
     }
 });
 
@@ -666,8 +666,8 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
 
     ffmpegProcess.on('error', (err) => {
         job.status = 'failed';
-        job.error = 'FFmpeg failed to start.';
-        console.error(`[Job ${jobId}] FFmpeg spawn error:`, err);
+        job.error = 'Processing encountered an unexpected error.';
+        console.error(`[Job ${jobId}] Rendering error:`, err);
     });
 
     ffmpegProcess.on('close', (code) => {
@@ -686,10 +686,10 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                         quality: clipMetadata.quality,
                         format: clipMetadata.format
                     };
-                    const { error } = await supabase.from('clips').insert(insertData);
-                    if (error) console.error(`[Job ${jobId}] ❌ DB Log Error:`, error.message);
-                    else console.log(`[Job ${jobId}] ✅ DB Log Success.`);
-                } catch (dbError) { console.error(`[Job ${jobId}] ❌ Critical DB Log Error:`, dbError); }
+                    await supabase.from('clips').insert(insertData);
+                } catch (dbError) { 
+                    console.error(`[Job ${jobId}] Log Error:`, dbError); 
+                }
             }
             logClipToDatabase();
 
@@ -699,8 +699,8 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
             job.result = { success: true, downloadUrl };
         } else {
             job.status = 'failed';
-            job.error = 'FFmpeg process failed. Check server logs for details.';
-            console.error(`[Job ${jobId}] FFmpeg exited with code ${code}. Stderr:`, stderrOutput);
+            job.error = 'Video processing failed. Please try again.';
+            console.error(`[Job ${jobId}] Render exited with code ${code}.`);
         }
     });
 }
@@ -709,9 +709,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
 // 6. تشغيل السيرفر على جميع الواجهات 0.0.0.0
 // =============================================================
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ YouTube Clip Server is running on port ${PORT}`);
-    console.log(`🛠️ YTDLP Path: ${YTDLP_PATH}`);
-    console.log(`🎬 FFMPEG Path: ${FFMPEG_PATH}`);
+    console.log(`✅ CutterTube Server is running on port ${PORT}`);
     console.log(`🌐 Public API URL: ${PUBLIC_API_URL}`);
 });
 
