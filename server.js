@@ -3,6 +3,7 @@ const express = require('express');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const cors = require('cors');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
@@ -73,11 +74,44 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات (Linux / Railway)
+// 5. مسارات الأدوات وإعداد الكوكيز (Linux / Railway)
 // =============================================================
 const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 const FFMPEG_PATH = process.env.FFMPEG_PATH || 'ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+
+// ملف الكوكيز لتجاوز تحقق يوتيوب
+const COOKIES_PATH = path.join(os.tmpdir(), 'youtube_cookies.txt');
+
+if (process.env.YOUTUBE_COOKIES) {
+    try {
+        let cookieData = process.env.YOUTUBE_COOKIES.trim();
+        // إذا كان مشفراً بـ Base64 يتم فك تشفيره تلقائياً
+        if (!cookieData.includes('\t') && !cookieData.includes('\n')) {
+            cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
+        }
+        fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
+        console.log('🍪 تم تحميل ملف الكوكيز بنجاح لتخطي حظر يوتيوب.');
+    } catch (err) {
+        console.error('❌ خطأ في معالجة متغير YOUTUBE_COOKIES:', err);
+    }
+}
+
+// دالة مساعدة لبناء أوامر yt-dlp مدمجة بالكوكيز والمحاكاة
+function getBaseYtDlpArgs(extraArgs = []) {
+    const args = [
+        '--user-agent', USER_AGENT,
+        '--no-warnings',
+        '--no-check-certificates',
+        '--extractor-args', 'youtube:player_client=android,web'
+    ];
+    if (fs.existsSync(COOKIES_PATH)) {
+        args.push('--cookies', COOKIES_PATH);
+    } else if (fs.existsSync(path.join(__dirname, 'cookies.txt'))) {
+        args.push('--cookies', path.join(__dirname, 'cookies.txt'));
+    }
+    return [...args, ...extraArgs];
+}
 
 const jobs = {};
 
@@ -136,7 +170,8 @@ app.get('/', (req, res) => {
         service: 'CutterTube Clip Server', 
         public_url: PUBLIC_API_URL,
         ytdlp: YTDLP_PATH, 
-        ffmpeg: FFMPEG_PATH 
+        ffmpeg: FFMPEG_PATH,
+        cookies_loaded: fs.existsSync(COOKIES_PATH)
     });
 });
 
@@ -186,17 +221,10 @@ app.get('/video-metadata', async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // استخدام yt-dlp مع وسائط تخطي الحظر السحابي
-    const ytdlpArgs = [
-        '--user-agent', USER_AGENT,
-        '--no-warnings',
-        '--no-check-certificates',
-        '--extractor-args', 'youtube:player_client=android,web',
-        '--dump-json',
-        videoUrl
-    ];
-
+    // استخدام الدالة المجهزة بالكوكيز والمحاكاة
+    const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
     const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
+    
     let output = '';
     let errorOutput = '';
 
@@ -426,18 +454,10 @@ app.post('/create-clip', async (req, res) => {
             ? (audioTrackId ? audioTrackId : `bestaudio/best`)
             : `bestvideo[height<=?${parseInt(videoQuality.replace('p', ''))}][ext=mp4]+${baseAudio}/bestvideo+bestaudio/best`;
 
-        // إضافة وسائط تخطي الحظر السحابي هنا أيضاً
-        const ytdlpArgs = [
-            '--user-agent', USER_AGENT,
-            '--no-warnings',
-            '--no-check-certificates',
-            '--extractor-args', 'youtube:player_client=android,web',
-            videoUrl,
-            '-f', formatSelection,
-            '-g'
-        ];
-
+        // استخدام دالة الكوكيز لتوليد روابط البث المباشر
+        const ytdlpArgs = getBaseYtDlpArgs([videoUrl, '-f', formatSelection, '-g']);
         const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
+        
         let streamUrls = '';
         ytdlp.stdout.on('data', (data) => streamUrls += data.toString());
         ytdlp.stderr.on('data', (data) => console.error(`[Job ${jobId}] YTDLP Stderr:`, data.toString()));
@@ -461,11 +481,9 @@ app.post('/create-clip', async (req, res) => {
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
                 console.log(`[Job ${jobId}] Fetching subtitles for lang: ${subtitleTrackId}`);
                 const subFileBase = path.join(CLIPS_DIR, `sub_${jobId}`);
-                const subProcess = spawn(YTDLP_PATH, [
-                    '--user-agent', USER_AGENT,
-                    '--no-warnings',
-                    '--no-check-certificates',
-                    '--extractor-args', 'youtube:player_client=android,web',
+                
+                // استخدام دالة الكوكيز لتحميل الترجمة
+                const subArgs = getBaseYtDlpArgs([
                     '--skip-download',
                     '--write-subs',
                     '--write-auto-subs',
@@ -474,6 +492,8 @@ app.post('/create-clip', async (req, res) => {
                     '-o', subFileBase,
                     videoUrl
                 ]);
+                
+                const subProcess = spawn(YTDLP_PATH, subArgs);
 
                 await new Promise((resolve) => {
                     subProcess.on('close', (subCode) => {
