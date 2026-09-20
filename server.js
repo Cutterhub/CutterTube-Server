@@ -268,7 +268,6 @@ app.get('/video-metadata', async (req, res) => {
             const languageMap = {};
 
             if (info.formats) {
-                console.log(`[Metadata] Analyzing ${info.formats.length} formats for video: ${videoId}`);
                 info.formats.forEach(f => {
                     const hasAudio = f.acodec && f.acodec !== 'none';
                     const hasNoVideo = !f.vcodec || f.vcodec === 'none';
@@ -292,7 +291,6 @@ app.get('/video-metadata', async (req, res) => {
             }
 
             if (info.audio_tracks && Array.isArray(info.audio_tracks)) {
-                console.log(`[Metadata] Found ${info.audio_tracks.length} audio_tracks in info.`);
                 info.audio_tracks.forEach(track => {
                     const lang = track.id || track.language || 'unknown';
                     const name = track.name || track.language_preference || lang;
@@ -307,8 +305,6 @@ app.get('/video-metadata', async (req, res) => {
                     }
                 });
             }
-
-            console.log(`[Metadata] Unique audio languages identified: ${Object.keys(languageMap).length}`);
 
             for (const key in languageMap) {
                 audioTracks.push(languageMap[key]);
@@ -404,15 +400,22 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
+// =============================================================
+// مسار إنشاء وقص الفيديو عبر التحميل المباشر للقسم
+// =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ message: 'Unauthorized: No token provided.' });
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ message: 'Unauthorized: No token provided.' });
+        }
         const token = authHeader.split(' ')[1];
 
         const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-        if (userError || !user) return res.status(403).json({ message: 'Forbidden: Invalid token.' });
+        if (userError || !user) {
+            return res.status(403).json({ message: 'Forbidden: Invalid token.' });
+        }
 
         const profile = await getUserProfileData(user.id);
 
@@ -458,51 +461,56 @@ app.post('/create-clip', async (req, res) => {
         jobs[jobId] = { status: 'starting', progress: 0, tempFile: `${jobId}.${format}`, finalFile: finalFilename };
         res.status(202).json({ success: true, jobId });
 
-        console.log(`[Job ${jobId}] Starting process for user ${user.id}.`);
+        console.log(`[Job ${jobId}] Starting download section for user ${user.id}.`);
 
         const totalDuration = endTime - startTime;
         const isGif = format === 'gif';
         const videoQuality = isGif ? '720' : (quality || '720');
-
         const targetHeight = parseInt(videoQuality.replace('p', '')) || 720;
-        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio';
+        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // اختيار الصيغ بمرونة مطلقة مع دعم كافة الجودات
+        // صيغة التحميل المباشر للقسم
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=${targetHeight}]+bestaudio/best[height<=${targetHeight}]/bestvideo+bestaudio/best`;
 
-        const ytdlpArgs = getBaseYtDlpArgs([videoUrl, '-f', formatSelection, '-g']);
-        const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
-        
-        let streamUrls = '';
+        const rawClipPath = path.join(CLIPS_DIR, `raw_${jobId}.mp4`);
+        const finalOutputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
+
+        // تحميل الجزء المحدد فقط عبر yt-dlp مع الكوكيز
+        const ytdlpSectionArgs = getBaseYtDlpArgs([
+            videoUrl,
+            '--download-sections', `*${startTime}-${endTime}`,
+            '--force-keyframes-at-cuts',
+            '-f', formatSelection,
+            '--ffmpeg-location', FFMPEG_PATH,
+            '-o', rawClipPath
+        ]);
+
+        const ytdlpProcess = spawn(YTDLP_PATH, ytdlpSectionArgs);
         let ytdlpError = '';
 
-        ytdlp.stdout.on('data', (data) => streamUrls += data.toString());
-        ytdlp.stderr.on('data', (data) => {
+        ytdlpProcess.stderr.on('data', (data) => {
             ytdlpError += data.toString();
             console.error(`[Job ${jobId}] YTDLP Stderr:`, data.toString());
         });
-        ytdlp.on('error', (err) => { 
-            jobs[jobId].status = 'failed'; 
-            jobs[jobId].error = 'Failed to start yt-dlp.'; 
+
+        ytdlpProcess.on('error', (err) => {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'Failed to start yt-dlp process.';
         });
 
-        ytdlp.on('close', async (code) => {
-            const urls = streamUrls.trim().split('\n').filter(u => u.startsWith('http'));
-            
-            if (code !== 0 || urls.length === 0) {
+        ytdlpProcess.on('close', async (code) => {
+            if (code !== 0 || !fs.existsSync(rawClipPath)) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = 'Failed to fetch stream URLs from YouTube. ' + (ytdlpError.split('\n')[0] || '');
+                jobs[jobId].error = 'Failed to download clip section from YouTube. ' + (ytdlpError.split('\n')[0] || '');
                 return;
             }
+
             jobs[jobId].status = 'processing';
-            jobs[jobId].progress = 5;
+            jobs[jobId].progress = 50;
 
-            const outputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
-            const videoStreamUrl = urls[0];
-            const audioStreamUrl = isAudioFormat(format) ? null : (urls.length > 1 ? urls[1] : urls[0]);
-
+            // تحميل ملف الترجمة إن طُلب
             let subPath = null;
             if (subtitleTrackId && !isAudioFormat(format) && !isGif) {
                 console.log(`[Job ${jobId}] Fetching subtitles for lang: ${subtitleTrackId}`);
@@ -519,15 +527,11 @@ app.post('/create-clip', async (req, res) => {
                 ]);
                 
                 const subProcess = spawn(YTDLP_PATH, subArgs);
-
                 await new Promise((resolve) => {
                     subProcess.on('close', (subCode) => {
                         const expectedSubPath = `${subFileBase}.${subtitleTrackId}.srt`;
                         if (subCode === 0 && fs.existsSync(expectedSubPath)) {
                             subPath = expectedSubPath;
-                            console.log(`[Job ${jobId}] Subtitles downloaded to ${subPath}`);
-                        } else {
-                            console.warn(`[Job ${jobId}] Subtitles download failed or not found.`);
                         }
                         resolve();
                     });
@@ -536,80 +540,63 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='ClipsCap.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
+            // معالجة الفيديو محلياً عبر FFmpeg بدون لمس الإنترنت
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
-                    '-user_agent', USER_AGENT,
-                    '-ss', startTime.toString(),
-                    '-t', totalDuration.toString(),
-                    '-i', videoStreamUrl,
+                    '-i', rawClipPath,
                     '-vf', `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen`,
                     '-y', palettePath
                 ];
                 const paletteProcess = spawn(FFMPEG_PATH, paletteArgs);
                 paletteProcess.on('close', (paletteCode) => {
-                    if (paletteCode !== 0) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'FFmpeg failed during palette generation.'; return; }
-                    jobs[jobId].progress = 50;
+                    if (paletteCode !== 0) { 
+                        jobs[jobId].status = 'failed'; 
+                        jobs[jobId].error = 'FFmpeg failed during palette generation.'; 
+                        if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+                        return; 
+                    }
 
                     let filterComplex = `fps=${fps},scale=${scale}:-1:flags=lanczos`;
                     if (permissions.watermark) {
-                        console.log(`[Job ${jobId}] Watermark will be applied for this user.`);
                         filterComplex += `,${watermarkFilter}`;
                     }
                     filterComplex += `[x];[x][1:v]paletteuse`;
 
                     const gifArgs = [
-                        '-user_agent', USER_AGENT,
-                        '-ss', startTime.toString(),
-                        '-t', totalDuration.toString(),
-                        '-i', videoStreamUrl,
+                        '-i', rawClipPath,
                         '-i', palettePath,
                         '-filter_complex', filterComplex,
                         '-y', '-progress', 'pipe:1',
-                        outputPath
+                        finalOutputPath
                     ];
                     const gifProcess = spawn(FFMPEG_PATH, gifArgs);
                     handleFfmpegProcess(gifProcess, jobId, totalDuration, clipMetadata, () => {
                         if (fs.existsSync(palettePath)) fs.unlinkSync(palettePath);
+                        if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
                     });
                 });
             } else if (isAudioFormat(format)) {
                 let ffmpegArgs = [
-                    '-user_agent', USER_AGENT,
-                    '-ss', startTime.toString(),
-                    '-i', videoStreamUrl,
-                    '-t', totalDuration.toString(),
+                    '-i', rawClipPath,
                     '-vn'
                 ];
                 if (format === 'mp3') ffmpegArgs.push('-c:a', 'libmp3lame', '-q:a', '0');
                 else if (format === 'wav') ffmpegArgs.push('-c:a', 'pcm_s16le');
-                ffmpegArgs.push('-y', '-progress', 'pipe:1', outputPath);
+                ffmpegArgs.push('-y', '-progress', 'pipe:1', finalOutputPath);
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
-                handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata);
+                handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
+                    if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
+                });
             } else {
-                let ffmpegArgs = [];
-                ffmpegArgs.push('-user_agent', USER_AGENT);
-                ffmpegArgs.push('-ss', startTime.toString(), '-i', videoStreamUrl);
-                if (audioStreamUrl && audioStreamUrl !== videoStreamUrl) {
-                    ffmpegArgs.push('-user_agent', USER_AGENT);
-                    ffmpegArgs.push('-ss', startTime.toString(), '-i', audioStreamUrl);
-                }
-
-                ffmpegArgs.push('-t', totalDuration.toString());
-                if (audioStreamUrl && audioStreamUrl !== videoStreamUrl && !mute) {
-                    ffmpegArgs.push('-map', '0:v:0', '-map', '1:a:0');
-                } else {
-                    ffmpegArgs.push('-map', '0:v:0');
-                }
-
+                let ffmpegArgs = ['-i', rawClipPath];
                 let filters = [];
+
                 if (permissions.watermark) {
-                    console.log(`[Job ${jobId}] Watermark will be applied for this user.`);
                     filters.push(watermarkFilter);
                 }
                 if (subPath) {
-                    console.log(`[Job ${jobId}] burning subtitles: ${subPath}`);
                     const escapedSubPath = subPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
                     filters.push(`subtitles='${escapedSubPath}'`);
                 }
@@ -622,20 +609,21 @@ app.post('/create-clip', async (req, res) => {
                 }
 
                 if (mute) {
-                    console.log(`[Job ${jobId}] Muting audio as requested.`);
                     ffmpegArgs.push('-an');
-                } else if (audioStreamUrl && audioStreamUrl !== videoStreamUrl) {
+                } else {
                     ffmpegArgs.push('-c:a', 'aac', '-b:a', '192k');
                 }
 
-                ffmpegArgs.push('-y', '-progress', 'pipe:1', outputPath);
+                ffmpegArgs.push('-y', '-progress', 'pipe:1', finalOutputPath);
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
                 handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
                     if (subPath && fs.existsSync(subPath)) fs.unlinkSync(subPath);
+                    if (fs.existsSync(rawClipPath)) fs.unlinkSync(rawClipPath);
                 });
             }
         });
+
     } catch (e) {
         console.error("[/create-clip] CRITICAL ERROR:", e);
         if (jobId && jobs[jobId]) {
@@ -648,7 +636,7 @@ app.post('/create-clip', async (req, res) => {
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
     if (!job) return;
-    const baseProgress = job.progress || 5;
+    const baseProgress = job.progress || 50;
     const progressRange = 100 - baseProgress;
 
     let stderrOutput = '';
