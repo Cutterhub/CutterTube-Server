@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام
+// 1. تحديد المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -63,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع
+// 4. مسار مجلد المقاطع المؤقتة (Volume)
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 if (!fs.existsSync(CLIPS_DIR)) {
@@ -119,7 +119,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات الثلاث
+// 6. تعريف صلاحيات الباقات الثلاث (Free, Basic, Pro)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
@@ -145,11 +145,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700;
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
-    if (qualityKey === '720p') return 3600;
-    return 7200;
+    if (format === 'mp3') return 2700; // 45 دقيقة
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
+    if (qualityKey === '720p') return 3600; // 60 دقيقة
+    return 7200; // 120 دقيقة
 }
 
 function parseTargetHeight(qualityStr) {
@@ -182,7 +182,7 @@ function extractUserIdFromToken(token) {
     return null;
 }
 
-// دالة تحديد الخطة المعتمدة على users.plan مع دعم Admin و is_pro
+// دالة تحديد الخطة بناءً على users.plan مع دعم Admin و is_pro
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
     if (userRow.is_admin === true || userRow.role === 'admin') {
@@ -195,16 +195,26 @@ function resolveUserPlan(userRow) {
     if (['free', 'basic', 'pro'].includes(plan)) {
         return plan;
     }
+    if (userRow.role === 'basic') return 'basic';
     return 'free';
 }
 
 async function getUserProfileData(userId) {
     if (!userId) return null;
-    const { data: userRow } = await supabase
+    let { data: userRow } = await supabase
         .from('users')
         .select('*')
         .eq('id', userId)
         .maybeSingle();
+
+    if (!userRow) {
+        const { data: profileRow } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
+        userRow = profileRow;
+    }
 
     return userRow;
 }
@@ -234,7 +244,7 @@ app.get('/', (req, res) => {
 });
 
 // =============================================================
-// GET /video-metadata
+// GET /video-metadata (كشف الجودات الحقيقية المتاحة بدقة)
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -261,6 +271,7 @@ app.get('/video-metadata', async (req, res) => {
         try {
             const info = JSON.parse(output);
 
+            // استخراج الجودات المتوفرة فقط بدون تخمين
             const standardHeights = [144, 240, 360, 480, 720, 1080, 1440, 2160];
             const detectedHeights = new Set();
 
@@ -396,7 +407,7 @@ app.get('/user-status', async (req, res) => {
 });
 
 // =============================================================
-// GET /progress/:jobId
+// GET /progress/:jobId (SSE Stream)
 // =============================================================
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
@@ -435,7 +446,7 @@ app.get('/progress/:jobId', (req, res) => {
 });
 
 // =============================================================
-// POST /create-clip
+// POST /create-clip (معالجة 4K و 1080p الذكية وحماية الباقات)
 // =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
@@ -508,12 +519,10 @@ app.post('/create-clip', async (req, res) => {
 
         const clipMetadata = { 
             userId: userId, 
-            videoId: videoId,
-            name: cleanTitle, 
+            name: title, 
             videoUrl, 
             startTime, 
             endTime, 
-            duration,
             quality, 
             format, 
             plan: userPlan 
@@ -522,10 +531,11 @@ app.post('/create-clip', async (req, res) => {
         jobs[jobId] = { status: 'starting', progress: 0, tempFile: `${jobId}.${format}`, finalFile: finalFilename };
         res.status(202).json({ success: true, jobId });
 
+        const totalDuration = endTime - startTime;
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // محدد الجودة الدقيق مع ترتيب الكودك
+        // محدد الجودة مع تفضيل كودك VP9 و AVC لتسريع المعالجة وتفادي مشاكل AV1
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
@@ -611,7 +621,7 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // معالجة FFmpeg المعتمدة
+            // FFmpeg Render Pipeline
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -642,7 +652,7 @@ app.post('/create-clip', async (req, res) => {
                         finalOutputPath
                     ];
                     const gifProcess = spawn(FFMPEG_PATH, gifArgs);
-                    handleFfmpegProcess(gifProcess, jobId, duration, clipMetadata, () => {
+                    handleFfmpegProcess(gifProcess, jobId, totalDuration, clipMetadata, () => {
                         if (fs.existsSync(palettePath)) fs.unlinkSync(palettePath);
                         if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                     });
@@ -657,7 +667,7 @@ app.post('/create-clip', async (req, res) => {
                 ffmpegArgs.push('-y', '-progress', 'pipe:1', finalOutputPath);
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
-                handleFfmpegProcess(ffmpegProcess, jobId, duration, clipMetadata, () => {
+                handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
                     if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                 });
             } else {
@@ -676,6 +686,7 @@ app.post('/create-clip', async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
+                // ترميز H.264 متوافق مع MP4 لكافة أجهزة العرض
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22');
 
                 if (mute) {
@@ -687,7 +698,7 @@ app.post('/create-clip', async (req, res) => {
                 ffmpegArgs.push('-y', '-progress', 'pipe:1', finalOutputPath);
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
-                handleFfmpegProcess(ffmpegProcess, jobId, duration, clipMetadata, () => {
+                handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
                     if (subPath && fs.existsSync(subPath)) fs.unlinkSync(subPath);
                     if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                 });
@@ -731,36 +742,21 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
         if (code === 0 && fs.existsSync(path.join(CLIPS_DIR, job.tempFile))) {
             if (onCompleteCallback) onCompleteCallback();
 
-            // ==========================================
-            // تسجيل المقطع في جدول clips الحقيقي بدقة تامة
-            // ==========================================
             async function logClipToDatabase() {
                 try {
+                    if (!clipMetadata.userId) return;
                     const insertData = {
-                        id: jobId,
-                        user_id: clipMetadata.userId || null,
-                        youtube_id: clipMetadata.videoId,
-                        youtube_url: clipMetadata.videoUrl,
-                        title: clipMetadata.name,
-                        channel_title: '',
-                        thumbnail_url: `https://i.ytimg.com/vi/${clipMetadata.videoId}/hqdefault.jpg`,
-                        original_duration: clipMetadata.duration || 0,
-                        start_time: Number(clipMetadata.startTime),
-                        end_time: Number(clipMetadata.endTime),
-                        clip_duration: Number(clipMetadata.duration),
-                        cost: 1,
-                        comment: `format:${clipMetadata.format}`,
-                        is_saved: false
+                        user_id: clipMetadata.userId,
+                        name: clipMetadata.name,
+                        video_url: clipMetadata.videoUrl,
+                        start_time_seconds: Math.round(clipMetadata.startTime),
+                        end_time_seconds: Math.round(clipMetadata.endTime),
+                        quality: clipMetadata.quality,
+                        format: clipMetadata.format
                     };
-
-                    const { error } = await supabase.from('clips').insert(insertData);
-                    if (error) {
-                        console.error(`[Job ${jobId}] ❌ DB Log Error:`, error.message);
-                    } else {
-                        console.log(`[Job ${jobId}] ✅ Clip successfully logged to public.clips.`);
-                    }
+                    await supabase.from('clips').insert(insertData);
                 } catch (dbError) { 
-                    console.error(`[Job ${jobId}] ❌ DB Exception:`, dbError.message); 
+                    console.error(`[Job ${jobId}] DB Log Warning:`, dbError.message); 
                 }
             }
             logClipToDatabase();
