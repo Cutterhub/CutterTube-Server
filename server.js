@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام
+// 1. تحديد المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -63,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع
+// 4. مسار مجلد المقاطع المؤقتة (Volume)
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 if (!fs.existsSync(CLIPS_DIR)) {
@@ -124,14 +124,14 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120,
+        max_duration: 120, // دقيقتان
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -145,11 +145,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700;
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
-    if (qualityKey === '720p') return 3600;
-    return 7200;
+    if (format === 'mp3') return 2700; // 45 دقيقة
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
+    if (qualityKey === '720p') return 3600; // 60 دقيقة
+    return 7200; // 120 دقيقة
 }
 
 function parseTargetHeight(qualityStr) {
@@ -182,13 +182,18 @@ function extractUserIdFromToken(token) {
     return null;
 }
 
+// دالة تحديد الخطة بناءً على users.plan مع دعم Admin و is_pro
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
-    if (userRow.is_pro === true) return 'pro';
-    if (userRow.plan) {
-        const p = userRow.plan.toLowerCase().trim();
-        if (['free', 'basic', 'pro'].includes(p)) return p;
+    if (userRow.is_admin === true || userRow.role === 'admin') {
+        return 'pro';
+    }
+    if (userRow.is_pro === true) {
+        return 'pro';
+    }
+    const plan = String(userRow.plan || 'free').toLowerCase().trim();
+    if (['free', 'basic', 'pro'].includes(plan)) {
+        return plan;
     }
     if (userRow.role === 'basic') return 'basic';
     return 'free';
@@ -214,7 +219,21 @@ async function getUserProfileData(userId) {
     return userRow;
 }
 
-// مسار فحص صحة السيرفر
+function sanitizeFilename(name) {
+    if (!name) return 'clip';
+    return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
+}
+
+// =============================================================
+// مسارات التحقق والصحة
+// =============================================================
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'cuttertube-server'
+    });
+});
+
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -224,43 +243,8 @@ app.get('/', (req, res) => {
     });
 });
 
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        service: 'cuttertube-server',
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.get('/download/:tempFilename/:finalFilename', (req, res) => {
-    try {
-        const { tempFilename, finalFilename } = req.params;
-        const decodedFinalFilename = decodeURIComponent(finalFilename);
-        const filePath = path.join(CLIPS_DIR, tempFilename);
-
-        if (fs.existsSync(filePath)) {
-            res.download(filePath, decodedFinalFilename, (err) => {
-                if (err) console.error("[Download] Error sending file:", err);
-                fs.unlink(filePath, (unlinkErr) => {
-                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
-                });
-            });
-        } else {
-            res.status(404).send('File not found or has already been downloaded.');
-        }
-    } catch (error) {
-        console.error("[Download Error]", error);
-        res.status(500).send("An internal server error occurred.");
-    }
-});
-
-function sanitizeFilename(name) {
-    if (!name) return 'clip';
-    return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
-}
-
 // =============================================================
-// Endpoint to get Video Metadata
+// GET /video-metadata (كشف الجودات الحقيقية المتاحة بدقة)
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -278,16 +262,16 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput.split('\n')[0]}`);
             return res.status(500).json({ 
-                message: 'Failed to fetch video details.',
-                details: errorOutput || 'Unknown error'
+                message: 'Failed to fetch video details. Please try again later.'
             });
         }
 
         try {
             const info = JSON.parse(output);
 
+            // استخراج الجودات المتوفرة فقط بدون تخمين
             const standardHeights = [144, 240, 360, 480, 720, 1080, 1440, 2160];
             const detectedHeights = new Set();
 
@@ -302,7 +286,9 @@ app.get('/video-metadata', async (req, res) => {
             const availableQualities = standardHeights
                 .filter(h => {
                     for (const detected of detectedHeights) {
-                        if (Math.abs(detected - h) <= 15 || detected >= h) return true;
+                        if (Math.abs(detected - h) <= 15 || detected >= h) {
+                            return true;
+                        }
                     }
                     return false;
                 })
@@ -382,11 +368,14 @@ app.get('/video-metadata', async (req, res) => {
 
         } catch (e) {
             console.error(`[Metadata Parse Error]: ${e.message}`);
-            res.status(500).json({ message: 'Failed to process video metadata.', details: e.message });
+            res.status(500).json({ message: 'Failed to process video metadata.' });
         }
     });
 });
 
+// =============================================================
+// GET /user-status
+// =============================================================
 app.get('/user-status', async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
@@ -417,11 +406,12 @@ app.get('/user-status', async (req, res) => {
     }
 });
 
-// GET /progress/:jobId
+// =============================================================
+// GET /progress/:jobId (SSE Stream)
+// =============================================================
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
     
-    // ضمان إرسال رأس SSE دائماً لتفادي خطأ MIME type
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -455,7 +445,9 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
-// POST /create-clip
+// =============================================================
+// POST /create-clip (معالجة 4K و 1080p الذكية وحماية الباقات)
+// =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
@@ -487,6 +479,7 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseTargetHeight(quality);
         const qualityKey = targetHeight >= 2160 ? '4k' : (targetHeight >= 1440 ? '2k' : `${targetHeight}p`);
 
+        // 1. التحقق من المدة المسموحة
         let maxAllowedDuration = permissions.max_duration;
         if (userPlan === 'pro') {
             maxAllowedDuration = getMaxDurationForPro(qualityKey, format.toLowerCase());
@@ -499,6 +492,7 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
+        // 2. التحقق من الجودة المسموحة
         const isQualityAllowed = permissions.allowed_qualities.includes(qualityKey) || 
                                  permissions.allowed_qualities.includes(`${targetHeight}p`) ||
                                  (permissions.allowed_qualities.includes('4k') && targetHeight >= 2160) ||
@@ -510,6 +504,7 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
+        // 3. التحقق من الصيغة المسموحة
         if (!permissions.allowed_formats.includes(format.toLowerCase())) {
             return res.status(403).json({ 
                 message: `The selected format (${format}) is not available on the ${permissions.plan_name} plan.` 
@@ -540,6 +535,7 @@ app.post('/create-clip', async (req, res) => {
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
+        // محدد الجودة مع تفضيل كودك VP9 و AVC لتسريع المعالجة وتفادي مشاكل AV1
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
@@ -625,6 +621,7 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
+            // FFmpeg Render Pipeline
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -689,6 +686,7 @@ app.post('/create-clip', async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
+                // ترميز H.264 متوافق مع MP4 لكافة أجهزة العرض
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22');
 
                 if (mute) {
@@ -775,7 +773,9 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 }
 
+// =============================================================
 // GET /download/:tempFilename/:finalFilename
+// =============================================================
 app.get('/download/:tempFilename/:finalFilename', (req, res) => {
     try {
         const { tempFilename, finalFilename } = req.params;
