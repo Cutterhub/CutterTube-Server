@@ -63,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع المؤقتة (Volume)
+// 4. مسار مجلد المقاطع
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 if (!fs.existsSync(CLIPS_DIR)) {
@@ -119,22 +119,22 @@ function getBaseYtDlpArgs(extraArgs = []) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات (Free, Basic, Pro)
+// 6. تعريف صلاحيات الباقات الثلاث (Free, Basic, Pro)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120, // دقيقتان
+        max_duration: 120,
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800, // 30 دقيقة
+        max_duration: 1800,
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
-        allowed_formats: ['mp4', 'mp3']
+        allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
     },
     pro: {
         plan_name: 'Pro',
@@ -145,11 +145,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700; // 45 دقيقة
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة للـ 4K
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
-    if (qualityKey === '720p') return 3600; // 60 دقيقة
-    return 7200; // 120 دقيقة
+    if (format === 'mp3') return 2700;
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
+    if (qualityKey === '720p') return 3600;
+    return 7200;
 }
 
 function parseTargetHeight(qualityStr) {
@@ -182,16 +182,15 @@ function extractUserIdFromToken(token) {
     return null;
 }
 
-// دالة تحديد الخطة المعتمدة على users.plan مع ترقية الـ Admin
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') {
-        return 'pro';
+    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
+    if (userRow.is_pro === true) return 'pro';
+    if (userRow.plan) {
+        const p = userRow.plan.toLowerCase().trim();
+        if (['free', 'basic', 'pro'].includes(p)) return p;
     }
-    const plan = String(userRow.plan || 'free').toLowerCase().trim();
-    if (['free', 'basic', 'pro'].includes(plan)) {
-        return plan;
-    }
+    if (userRow.role === 'basic') return 'basic';
     return 'free';
 }
 
@@ -203,27 +202,19 @@ async function getUserProfileData(userId) {
         .eq('id', userId)
         .maybeSingle();
 
+    if (!userRow) {
+        const { data: profileRow } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
+        userRow = profileRow;
+    }
+
     return userRow;
 }
 
-function sanitizeFilename(name) {
-    if (!name) return 'clip';
-    return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
-}
-
-// =============================================================
-// Endpoints
-// =============================================================
-
-// GET /health
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        service: 'cuttertube-server'
-    });
-});
-
-// GET /
+// مسار فحص صحة السيرفر
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -233,7 +224,44 @@ app.get('/', (req, res) => {
     });
 });
 
-// GET /video-metadata
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'cuttertube-server',
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/download/:tempFilename/:finalFilename', (req, res) => {
+    try {
+        const { tempFilename, finalFilename } = req.params;
+        const decodedFinalFilename = decodeURIComponent(finalFilename);
+        const filePath = path.join(CLIPS_DIR, tempFilename);
+
+        if (fs.existsSync(filePath)) {
+            res.download(filePath, decodedFinalFilename, (err) => {
+                if (err) console.error("[Download] Error sending file:", err);
+                fs.unlink(filePath, (unlinkErr) => {
+                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
+                });
+            });
+        } else {
+            res.status(404).send('File not found or has already been downloaded.');
+        }
+    } catch (error) {
+        console.error("[Download Error]", error);
+        res.status(500).send("An internal server error occurred.");
+    }
+});
+
+function sanitizeFilename(name) {
+    if (!name) return 'clip';
+    return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
+}
+
+// =============================================================
+// Endpoint to get Video Metadata
+// =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
@@ -250,16 +278,16 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput.split('\n')[0]}`);
+            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
-                message: 'Failed to fetch video metadata.' 
+                message: 'Failed to fetch video details.',
+                details: errorOutput || 'Unknown error'
             });
         }
 
         try {
             const info = JSON.parse(output);
 
-            // استخراج الجودات المتوفرة بدقة
             const standardHeights = [144, 240, 360, 480, 720, 1080, 1440, 2160];
             const detectedHeights = new Set();
 
@@ -274,9 +302,7 @@ app.get('/video-metadata', async (req, res) => {
             const availableQualities = standardHeights
                 .filter(h => {
                     for (const detected of detectedHeights) {
-                        if (Math.abs(detected - h) <= 15 || detected >= h) {
-                            return true;
-                        }
+                        if (Math.abs(detected - h) <= 15 || detected >= h) return true;
                     }
                     return false;
                 })
@@ -356,12 +382,11 @@ app.get('/video-metadata', async (req, res) => {
 
         } catch (e) {
             console.error(`[Metadata Parse Error]: ${e.message}`);
-            res.status(500).json({ message: 'Failed to process video metadata.' });
+            res.status(500).json({ message: 'Failed to process video metadata.', details: e.message });
         }
     });
 });
 
-// GET /user-status
 app.get('/user-status', async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
@@ -395,12 +420,17 @@ app.get('/user-status', async (req, res) => {
 // GET /progress/:jobId
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
-    if (!jobs[jobId]) return res.status(404).json({ message: 'Job not found.' });
-
+    
+    // ضمان إرسال رأس SSE دائماً لتفادي خطأ MIME type
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
+
+    if (!jobs[jobId]) {
+        res.write(`event: error\ndata: ${JSON.stringify({ message: 'Job not found or already finished.' })}\n\n`);
+        return res.end();
+    }
 
     const sendProgress = () => {
         const currentJob = jobs[jobId];
@@ -425,9 +455,7 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
-// =============================================================
-// POST /create-clip (معالجة 4K الذكية وترتيب الكودك الكامل)
-// =============================================================
+// POST /create-clip
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
@@ -459,7 +487,6 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseTargetHeight(quality);
         const qualityKey = targetHeight >= 2160 ? '4k' : (targetHeight >= 1440 ? '2k' : `${targetHeight}p`);
 
-        // 1. التحقق من المدة المسموحة
         let maxAllowedDuration = permissions.max_duration;
         if (userPlan === 'pro') {
             maxAllowedDuration = getMaxDurationForPro(qualityKey, format.toLowerCase());
@@ -472,7 +499,6 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        // 2. التحقق من الجودة المسموحة للباقة
         const isQualityAllowed = permissions.allowed_qualities.includes(qualityKey) || 
                                  permissions.allowed_qualities.includes(`${targetHeight}p`) ||
                                  (permissions.allowed_qualities.includes('4k') && targetHeight >= 2160) ||
@@ -484,7 +510,6 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        // 3. التحقق من الصيغة المسموحة للباقة
         if (!permissions.allowed_formats.includes(format.toLowerCase())) {
             return res.status(403).json({ 
                 message: `The selected format (${format}) is not available on the ${permissions.plan_name} plan.` 
@@ -515,7 +540,6 @@ app.post('/create-clip', async (req, res) => {
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // محدد الجودة مع تفضيل VP9 و AVC لتفادي ثقل AV1
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
@@ -524,7 +548,6 @@ app.post('/create-clip', async (req, res) => {
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
         const finalOutputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
 
-        // إضافة --format-sort لإعطاء أولوية لـ VP9 و AVC لتسريع 4K ومنع انهيار الذاكرة
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
@@ -555,7 +578,6 @@ app.post('/create-clip', async (req, res) => {
             const actualRawPath = foundFiles.length > 0 ? path.join(CLIPS_DIR, foundFiles[0]) : null;
 
             if (code !== 0 || !actualRawPath || !fs.existsSync(actualRawPath)) {
-                // تسجيل كامل التقرير في Railway
                 console.error(`[Job ${jobId}] Download failed (code ${code}):`, JSON.stringify({
                     requestedQuality: quality,
                     targetHeight,
@@ -603,7 +625,6 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // FFmpeg Render Pipeline
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -668,7 +689,6 @@ app.post('/create-clip', async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز H.264 فائق السرعة لضمان تشغيل 1080p و 4K على كافة الأجهزة
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22');
 
                 if (mute) {
