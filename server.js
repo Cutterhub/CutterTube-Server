@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام
+// 1. تحديد المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -102,8 +102,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
     ];
 
     const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
-    
-    // تمرير خادم التوكنات وعميل mweb المعتمد لـ BotGuard
     args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
     args.push('--extractor-args', 'youtube:player_client=mweb,web,default');
 
@@ -220,7 +218,7 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// GET / (فحص الاتصال المباشر مع مزود التوكنات)
+// مسار فحص صحة السيرفر
 // =============================================================
 app.get('/', async (req, res) => {
     const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
@@ -736,7 +734,9 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-});
+};
+app.post('/create-clip', handleCreateClip);
+app.post('/api/create-clip', handleCreateClip);
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
