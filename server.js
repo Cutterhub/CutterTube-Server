@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. المنفذ والرابط العام (Railway / Linux)
+// 1. المنفذ والرابط العام
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -71,7 +71,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وإعداد PO Token Provider
+// 5. مسارات الأدوات وتفعيل الكوكيز الإجباري لتخطي الحظر
 // =============================================================
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
@@ -85,9 +85,9 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
-        console.log('🍪 Session credentials loaded successfully.');
+        console.log('🍪 تم تفعيل ملف الكوكيز بنجاح لتخطي حظر يوتيوب.');
     } catch (err) {
-        console.error('❌ Credentials processing error.');
+        console.error('❌ خطأ في معالجة الكوكيز:', err);
     }
 }
 
@@ -98,17 +98,15 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-check-certificates',
         '--no-playlist',
         '--force-ipv4',
-        '--js-runtimes', 'node'
+        '--js-runtimes', 'node',
+        '--extractor-args', 'youtube:player_client=web,default'
     ];
-
-    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
-    args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
-    args.push('--extractor-args', 'youtube:player_client=web,web_embedded,mweb,default');
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
+    // استخدام الكوكيز تلقائياً دائماً عند وجودها
+    if (hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
     }
@@ -123,19 +121,19 @@ function spawnYtDlp(args) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات الثلاث (Free, Basic, Pro)
+// 6. تعريف صلاحيات الباقات (Free: 720p, Basic: 1080p, Pro: 4K)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120,
+        max_duration: 120, // دقيقتان
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -221,43 +219,19 @@ function sanitizeFilename(name) {
     return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
 }
 
-// =============================================================
-// مسارات التحقق والصحة
-// =============================================================
-app.get('/', async (req, res) => {
-    const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
-    let potReachable = false;
-    let potResponse = null;
-
-    try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 2500);
-        const pingRes = await fetch(`${potUrl}/ping`, { signal: controller.signal });
-        clearTimeout(timeout);
-        potReachable = pingRes.ok;
-        potResponse = await pingRes.text();
-    } catch (err) {
-        potReachable = false;
-        potResponse = err.message;
-    }
-
+// مسار فحص صحة السيرفر
+app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
         service: 'CutterTube Processing API', 
         version: '1.0.0',
-        pot_provider_url: potUrl,
-        pot_provider_reachable: potReachable,
-        pot_provider_status: potResponse,
+        cookies_loaded: fs.existsSync(COOKIES_PATH) || fs.existsSync(path.join(__dirname, 'cookies.txt')),
         timestamp: new Date().toISOString()
     });
 });
 
 app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        service: 'cuttertube-server',
-        timestamp: new Date().toISOString()
-    });
+    res.status(200).json({ status: 'ok', service: 'cuttertube-server' });
 });
 
 app.get('/api/health', (req, res) => {
@@ -283,7 +257,7 @@ const handleVideoMetadata = async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
                 message: 'Failed to fetch video details.',
                 details: errorOutput ? errorOutput.split('\n').filter(Boolean).slice(-2).join(' ') : 'Unknown error'
@@ -475,7 +449,7 @@ app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip
+// POST /create-clip (قص وتنزيل 1080p و 4K المباشر والسريع)
 // =============================================================
 const handleCreateClip = async (req, res) => {
     let jobId = null;
@@ -559,11 +533,12 @@ const handleCreateClip = async (req, res) => {
 
         const totalDuration = endTime - startTime;
         const isGif = format.toLowerCase() === 'gif';
-        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
+        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
+        // محدد الجودة المباشر لـ 1080p و 4K
         let formatSelection = isAudioFormat(format)
-            ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
-            : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+bestaudio/best`;
+            ? (audioTrackId ? audioTrackId : 'bestaudio/best')
+            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -714,6 +689,7 @@ const handleCreateClip = async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
+                // ترميز خفيف وسريع متوافق مع MP4
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -739,9 +715,7 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-};
-app.post('/create-clip', handleCreateClip);
-app.post('/api/create-clip', handleCreateClip);
+});
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -803,9 +777,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 }
 
-// =============================================================
 // GET /download/:tempFilename/:finalFilename
-// =============================================================
 const handleDownload = (req, res) => {
     try {
         const { tempFilename, finalFilename } = req.params;
