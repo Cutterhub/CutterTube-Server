@@ -101,10 +101,8 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--js-runtimes', 'node'
     ];
 
-    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || process.env.POT_PROVIDER_URL;
-    if (potProviderUrl) {
-        args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
-    }
+    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
