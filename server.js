@@ -73,7 +73,6 @@ if (!fs.existsSync(CLIPS_DIR)) {
 // =============================================================
 // 5. مسارات الأدوات وإعداد PO Token Provider
 // =============================================================
-const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
@@ -91,6 +90,7 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
+// دالة بناء أوامر yt-dlp مع تفعيل PO Token التلقائي
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
@@ -114,6 +114,11 @@ function getBaseYtDlpArgs(extraArgs = []) {
     }
 
     return [...args, ...extraArgs];
+}
+
+// تشغيل yt-dlp من داخل بيئة بايثون لضمان تحميل إضافة bgutil
+function spawnYtDlp(args) {
+    return spawn('python3', ['-m', 'yt_dlp', ...args]);
 }
 
 const jobs = {};
@@ -218,7 +223,7 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// مسار فحص صحة السيرفر
+// GET / (فحص الاتصال المباشر مع مزود التوكنات)
 // =============================================================
 app.get('/', async (req, res) => {
     const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
@@ -269,7 +274,9 @@ const handleVideoMetadata = async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
-    const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
+    
+    // استخدام spawnYtDlp المضمونة من بايثون
+    const ytdlp = spawnYtDlp(ytdlpArgs);
     
     let output = '';
     let errorOutput = '';
@@ -575,7 +582,7 @@ const handleCreateClip = async (req, res) => {
             '-o', rawClipPath
         ]);
 
-        const ytdlpProcess = spawn(YTDLP_PATH, ytdlpSectionArgs);
+        const ytdlpProcess = spawnYtDlp(ytdlpSectionArgs);
         let ytdlpFullStderr = '';
 
         ytdlpProcess.stderr.on('data', (data) => {
@@ -628,7 +635,7 @@ const handleCreateClip = async (req, res) => {
                     videoUrl
                 ]);
                 
-                const subProcess = spawn(YTDLP_PATH, subArgs);
+                const subProcess = spawnYtDlp(subArgs);
                 await new Promise((resolve) => {
                     subProcess.on('close', (subCode) => {
                         const expectedSubPath = `${subFileBase}.${subtitleTrackId}.srt`;
@@ -734,9 +741,7 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-};
-app.post('/create-clip', handleCreateClip);
-app.post('/api/create-clip', handleCreateClip);
+});
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -772,16 +777,28 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                     const insertData = {
                         id: jobId,
                         user_id: clipMetadata.userId,
-                        name: clipMetadata.name,
-                        video_url: clipMetadata.videoUrl,
-                        start_time_seconds: Math.round(clipMetadata.startTime),
-                        end_time_seconds: Math.round(clipMetadata.endTime),
-                        quality: clipMetadata.quality,
-                        format: clipMetadata.format
+                        youtube_id: clipMetadata.videoId,
+                        youtube_url: clipMetadata.videoUrl,
+                        title: clipMetadata.name,
+                        channel_title: '',
+                        thumbnail_url: `https://i.ytimg.com/vi/${clipMetadata.videoId}/hqdefault.jpg`,
+                        original_duration: clipMetadata.duration || 0,
+                        start_time: Number(clipMetadata.startTime),
+                        end_time: Number(clipMetadata.endTime),
+                        clip_duration: Number(clipMetadata.duration),
+                        cost: 1,
+                        comment: `format:${clipMetadata.format}`,
+                        is_saved: false
                     };
-                    await supabase.from('clips').insert(insertData);
+
+                    const { error } = await supabase.from('clips').insert(insertData);
+                    if (error) {
+                        console.error(`[Job ${jobId}] ❌ DB Log Error:`, error.message);
+                    } else {
+                        console.log(`[Job ${jobId}] ✅ Clip successfully logged to public.clips.`);
+                    }
                 } catch (dbError) { 
-                    console.error(`[Job ${jobId}] DB Log Warning:`, dbError.message); 
+                    console.error(`[Job ${jobId}] ❌ DB Exception:`, dbError.message); 
                 }
             }
             logClipToDatabase();
