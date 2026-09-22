@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. المنفذ والرابط العام (Railway / Linux)
+// 1. تحديد المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -20,7 +20,7 @@ const PUBLIC_API_URL = process.env.PUBLIC_API_URL ||
                        (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`);
 
 // =============================================================
-// 2. إعدادات CORS
+// 2. إعدادات CORS الديناميكية
 // =============================================================
 const allowedOrigins = (
     process.env.CORS_ORIGINS ||
@@ -63,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مجلد المقاطع المؤقتة
+// 4. مسار مجلد المقاطع المؤقتة (Volume)
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 if (!fs.existsSync(CLIPS_DIR)) {
@@ -71,7 +71,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وإعداد الكوكيز
+// 5. مسارات الأدوات وإعداد PO Token Provider
 // =============================================================
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
@@ -85,7 +85,6 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
-        console.log('🍪 Session credentials loaded successfully.');
     } catch (err) {
         console.error('❌ Credentials processing error.');
     }
@@ -98,14 +97,17 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-check-certificates',
         '--no-playlist',
         '--force-ipv4',
-        '--js-runtimes', 'node',
-        '--extractor-args', 'youtube:player_client=web,default'
+        '--js-runtimes', 'node'
     ];
+
+    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
+    args.push('--extractor-args', 'youtube:player_client=mweb,web,default');
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    if (hasCookies) {
+    if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
     }
@@ -113,6 +115,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
     return [...args, ...extraArgs];
 }
 
+// تشغيل yt-dlp من داخل بيئة بايثون لضمان تحميل إضافة bgutil
 function spawnYtDlp(args) {
     return spawn('python3', ['-m', 'yt_dlp', ...args]);
 }
@@ -125,17 +128,17 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120, // دقيقتان
+        max_duration: 120,
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800, // 30 دقيقة
+        max_duration: 1800,
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
-        allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
+        allowed_formats: ['mp4', 'mp3']
     },
     pro: {
         plan_name: 'Pro',
@@ -146,11 +149,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700; // 45 دقيقة
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
-    if (qualityKey === '720p') return 3600; // 60 دقيقة
-    return 7200; // 120 دقيقة
+    if (format === 'mp3') return 2700;
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
+    if (qualityKey === '720p') return 3600;
+    return 7200;
 }
 
 function parseTargetHeight(qualityStr) {
@@ -170,71 +173,44 @@ function isAudioFormat(format) {
     return ['mp3', 'wav'].includes((format || '').toLowerCase());
 }
 
-// دالة فك التوكن واستخراج المعرف والإيميل معاً
-function extractTokenData(token) {
+function extractUserIdFromToken(token) {
     try {
         const parts = token.split('.');
         if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-            return {
-                id: payload.sub || payload.id || null,
-                email: payload.email || null,
-                role: payload.role || null
-            };
+            return payload.sub || payload.id || null;
         }
-    } catch (e) {}
-    return { id: null, email: null, role: null };
+    } catch (e) {
+        return null;
+    }
+    return null;
 }
 
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    const email = (userRow.email || '').trim().toLowerCase();
-    if (userRow.is_admin === true || userRow.role === 'admin' || email === 'admin@cuttertube.com' || email === 'abdela456a@gmail.com') {
-        return 'pro';
-    }
-    if (userRow.is_pro === true) {
-        return 'pro';
-    }
+    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
+    if (userRow.is_pro === true) return 'pro';
     const plan = String(userRow.plan || 'free').toLowerCase().trim();
     if (['free', 'basic', 'pro'].includes(plan)) return plan;
     if (userRow.role === 'basic') return 'basic';
     return 'free';
 }
 
-// دالة البحث الذكية بالـ ID والـ Email معاً
-async function getUserProfileData(userId, userEmail) {
-    if (!userId && !userEmail) return null;
-    
-    let userRow = null;
+async function getUserProfileData(userId) {
+    if (!userId) return null;
+    let { data: userRow } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
 
-    // 1. البحث بالـ ID
-    if (userId) {
-        const { data } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', userId)
-            .maybeSingle();
-        if (data) userRow = data;
-    }
-
-    // 2. إذا لم يُعثر عليه، البحث بالإيميل
-    if (!userRow && userEmail) {
-        const { data } = await supabase
-            .from('users')
-            .select('*')
-            .eq('email', userEmail.trim().toLowerCase())
-            .maybeSingle();
-        if (data) userRow = data;
-    }
-
-    // 3. محاولة احتياطية من جدول profiles
-    if (!userRow && userId) {
-        const { data } = await supabase
+    if (!userRow) {
+        const { data: profileRow } = await supabase
             .from('profiles')
             .select('*')
             .eq('id', userId)
             .maybeSingle();
-        if (data) userRow = data;
+        userRow = profileRow;
     }
 
     return userRow;
@@ -246,28 +222,52 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// المسارات العامة (Health & Root)
+// مسار فحص صحة السيرفر
 // =============================================================
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+    const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    let potReachable = false;
+    let potResponse = null;
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        const pingRes = await fetch(`${potUrl}/ping`, { signal: controller.signal });
+        clearTimeout(timeout);
+        potReachable = pingRes.ok;
+        potResponse = await pingRes.text();
+    } catch (err) {
+        potReachable = false;
+        potResponse = err.message;
+    }
+
     res.json({ 
         status: 'online', 
         service: 'CutterTube Processing API', 
         version: '1.0.0',
-        cookies_loaded: fs.existsSync(COOKIES_PATH) || fs.existsSync(path.join(__dirname, 'cookies.txt')),
+        pot_provider_url: potUrl,
+        pot_provider_reachable: potReachable,
+        pot_provider_status: potResponse,
         timestamp: new Date().toISOString()
     });
 });
 
-const handleHealth = (req, res) => {
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'cuttertube-server',
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/api/health', (req, res) => {
     res.status(200).json({ status: 'ok', service: 'cuttertube-server' });
-};
-app.get('/health', handleHealth);
-app.get('/api/health', handleHealth);
+});
 
 // =============================================================
 // GET /video-metadata
 // =============================================================
-async function handleVideoMetadata(req, res) {
+const handleVideoMetadata = async (req, res) => {
     const videoId = req.query.videoId || req.body?.videoId;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
 
@@ -283,7 +283,7 @@ async function handleVideoMetadata(req, res) {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
                 message: 'Failed to fetch video details.',
                 details: errorOutput ? errorOutput.split('\n').filter(Boolean).slice(-2).join(' ') : 'Unknown error'
@@ -391,7 +391,8 @@ async function handleVideoMetadata(req, res) {
             res.status(500).json({ message: 'Failed to process video metadata.', details: e.message });
         }
     });
-}
+};
+
 app.get('/video-metadata', handleVideoMetadata);
 app.post('/video-metadata', handleVideoMetadata);
 app.get('/api/video-metadata', handleVideoMetadata);
@@ -400,27 +401,21 @@ app.post('/api/video-metadata', handleVideoMetadata);
 // =============================================================
 // GET /user-status
 // =============================================================
-async function handleUserStatus(req, res) {
+const handleUserStatus = async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
             return res.status(401).json({ message: 'Unauthorized' });
         }
         const token = authHeader.split(' ')[1];
-        const tokenData = extractTokenData(token);
-
-        let userId = tokenData.id;
-        let userEmail = tokenData.email;
+        let userId = extractUserIdFromToken(token);
 
         if (!userId) {
             const { data: { user } } = await supabase.auth.getUser(token);
-            if (user) {
-                userId = user.id;
-                userEmail = user.email;
-            }
+            if (user) userId = user.id;
         }
 
-        const userRow = await getUserProfileData(userId, userEmail);
+        const userRow = await getUserProfileData(userId);
         const plan = resolveUserPlan(userRow);
 
         res.json({
@@ -434,14 +429,14 @@ async function handleUserStatus(req, res) {
         console.error("[/user-status Error]:", error.message);
         res.status(500).json({ message: "A server error occurred." });
     }
-}
+};
 app.get('/user-status', handleUserStatus);
 app.get('/api/user-status', handleUserStatus);
 
 // =============================================================
-// GET /progress/:jobId
+// GET /progress/:jobId (SSE Stream)
 // =============================================================
-function handleProgress(req, res) {
+const handleProgress = (req, res) => {
     const { jobId } = req.params;
     
     res.setHeader('Content-Type', 'text/event-stream');
@@ -475,46 +470,35 @@ function handleProgress(req, res) {
     req.on('close', () => {
         clearInterval(intervalId);
     });
-}
+};
 app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip (معالجة الباقات بالـ ID والـ Email المزدوج)
+// POST /create-clip
 // =============================================================
-async function handleCreateClip(req, res) {
+const handleCreateClip = async (req, res) => {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
         let userId = null;
-        let userEmail = req.body?.email || null;
         let userPlan = 'free';
 
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
-            const tokenData = extractTokenData(token);
+            userId = extractUserIdFromToken(token);
             
-            userId = tokenData.id;
-            if (!userEmail) userEmail = tokenData.email;
-
             if (!userId) {
                 try {
                     const { data: { user: authUser } } = await supabase.auth.getUser(token);
-                    if (authUser) {
-                        userId = authUser.id;
-                        if (!userEmail) userEmail = authUser.email;
-                    }
+                    if (authUser) userId = authUser.id;
                 } catch (e) {}
             }
 
-            // فحص البروفايل بالـ ID والـ Email
-            const userRow = await getUserProfileData(userId, userEmail);
-            userPlan = resolveUserPlan(userRow);
-            console.log(`👤 [User Identified] ID: ${userId} | Email: ${userEmail} | Plan: ${userPlan.toUpperCase()}`);
-        } else if (req.body?.userId || req.body?.user_id || req.body?.email) {
-            // التحقق الاحتياطي بالبيانات المرسلة
-            const userRow = await getUserProfileData(req.body.userId || req.body.user_id, req.body.email);
-            userPlan = resolveUserPlan(userRow);
+            if (userId) {
+                const userRow = await getUserProfileData(userId);
+                userPlan = resolveUserPlan(userRow);
+            }
         }
 
         const permissions = PLAN_PERMISSIONS[userPlan] || PLAN_PERMISSIONS['free'];
@@ -579,7 +563,7 @@ async function handleCreateClip(req, res) {
 
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
-            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
+            : `bestvideo[height<=${targetHeight}][vcodec^=avc]+${baseAudio}/bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -588,7 +572,6 @@ async function handleCreateClip(req, res) {
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
-            '--format-sort', `res:${targetHeight},vcodec:vp9,vcodec:avc,acodec:m4a`,
             '--downloader-args', 'ffmpeg_i:-threads 2',
             '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
@@ -730,7 +713,6 @@ async function handleCreateClip(req, res) {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز خفيف وسريع متوافق مع MP4
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -756,7 +738,7 @@ async function handleCreateClip(req, res) {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-}
+};
 app.post('/create-clip', handleCreateClip);
 app.post('/api/create-clip', handleCreateClip);
 
@@ -792,20 +774,13 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                 try {
                     if (!clipMetadata.userId) return;
                     const insertData = {
-                        id: jobId,
                         user_id: clipMetadata.userId,
-                        youtube_id: clipMetadata.videoId,
-                        youtube_url: clipMetadata.videoUrl,
-                        title: clipMetadata.name,
-                        channel_title: '',
-                        thumbnail_url: `https://i.ytimg.com/vi/${clipMetadata.videoId}/hqdefault.jpg`,
-                        original_duration: clipMetadata.duration || 0,
-                        start_time: Number(clipMetadata.startTime),
-                        end_time: Number(clipMetadata.endTime),
-                        clip_duration: Number(clipMetadata.duration),
-                        cost: 1,
-                        comment: `format:${clipMetadata.format}`,
-                        is_saved: false
+                        name: clipMetadata.name,
+                        video_url: clipMetadata.videoUrl,
+                        start_time_seconds: Math.round(clipMetadata.startTime),
+                        end_time_seconds: Math.round(clipMetadata.endTime),
+                        quality: clipMetadata.quality,
+                        format: clipMetadata.format
                     };
                     await supabase.from('clips').insert(insertData);
                 } catch (dbError) { 
@@ -826,10 +801,8 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 }
 
-// =============================================================
 // GET /download/:tempFilename/:finalFilename
-// =============================================================
-function handleDownload(req, res) {
+const handleDownload = (req, res) => {
     try {
         const { tempFilename, finalFilename } = req.params;
         const decodedFinalFilename = decodeURIComponent(finalFilename);
@@ -837,16 +810,10 @@ function handleDownload(req, res) {
 
         if (fs.existsSync(filePath)) {
             res.download(filePath, decodedFinalFilename, (err) => {
-                try {
-                    if (fs.existsSync(filePath)) {
-                        fs.unlinkSync(filePath);
-                        console.log(`🧹 Temp file ${tempFilename} cleaned up.`);
-                    }
-                } catch (cleanupErr) {}
-
-                if (err && err.code !== 'ECONNABORTED') {
-                    console.error("[Download Note]:", err.message);
-                }
+                if (err) console.error("[Download] Error sending file:", err);
+                fs.unlink(filePath, (unlinkErr) => {
+                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
+                });
             });
         } else {
             res.status(404).send('File not found or has already been downloaded.');
@@ -855,7 +822,7 @@ function handleDownload(req, res) {
         console.error("[Download Error]", error);
         res.status(500).send("An internal server error occurred.");
     }
-}
+};
 app.get('/download/:tempFilename/:finalFilename', handleDownload);
 app.get('/api/download/:tempFilename/:finalFilename', handleDownload);
 
