@@ -99,7 +99,9 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-check-certificates',
         '--no-playlist',
         '--force-ipv4',
-        '--js-runtimes', 'node'
+        '--js-runtimes', 'node',
+        // عملاء يوتيوب الموسعة لجلب كافة الجودات دون قيود SABR
+        '--extractor-args', 'youtube:player_client=ios,android,mweb,web_embedded,web'
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
@@ -108,9 +110,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
     if (hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
-        args.push('--extractor-args', 'youtube:player_client=web,default');
-    } else {
-        args.push('--extractor-args', 'youtube:player_client=android,ios,web');
     }
 
     return [...args, ...extraArgs];
@@ -134,7 +133,7 @@ const PLAN_PERMISSIONS = {
         max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
-        allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
+        allowed_formats: ['mp4', 'mp3']
     },
     pro: {
         plan_name: 'Pro',
@@ -145,11 +144,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700; // 45 دقيقة
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
-    if (qualityKey === '720p') return 3600; // 60 دقيقة
-    return 7200; // 120 دقيقة
+    if (format === 'mp3') return 2700;
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
+    if (qualityKey === '720p') return 3600;
+    return 7200;
 }
 
 function parseTargetHeight(qualityStr) {
@@ -234,7 +233,7 @@ app.get('/', (req, res) => {
 });
 
 // =============================================================
-// GET /video-metadata
+// GET /video-metadata (كشف الجودات الحقيقية الصالحة للبث)
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -266,7 +265,8 @@ app.get('/video-metadata', async (req, res) => {
 
             if (info.formats && Array.isArray(info.formats)) {
                 info.formats.forEach(f => {
-                    if (f.height && typeof f.height === 'number') {
+                    const hasValidVideo = f.vcodec && f.vcodec !== 'none';
+                    if (hasValidVideo && f.height && typeof f.height === 'number') {
                         detectedHeights.add(f.height);
                     }
                 });
@@ -275,13 +275,11 @@ app.get('/video-metadata', async (req, res) => {
             const availableQualities = standardHeights
                 .filter(h => {
                     for (const detected of detectedHeights) {
-                        if (Math.abs(detected - h) <= 15 || detected >= h) {
-                            return true;
-                        }
+                        if (detected === h || Math.abs(detected - h) <= 10) return true;
                     }
                     return false;
                 })
-                .map(h => `${h}p`);
+                .map(h => h === 2160 ? '4k' : (h === 1440 ? '2k' : `${h}p`));
 
             const audioTracks = [];
             const languageMap = {};
@@ -362,7 +360,9 @@ app.get('/video-metadata', async (req, res) => {
     });
 });
 
+// =============================================================
 // GET /user-status
+// =============================================================
 app.get('/user-status', async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
@@ -393,7 +393,9 @@ app.get('/user-status', async (req, res) => {
     }
 });
 
+// =============================================================
 // GET /progress/:jobId
+// =============================================================
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
     
@@ -431,7 +433,7 @@ app.get('/progress/:jobId', (req, res) => {
 });
 
 // =============================================================
-// POST /create-clip (معالجة 1080p و 4K المحمية من امتلاء الرام)
+// POST /create-clip (تطبيق الجودة الدقيقة بدون هبوط صامت)
 // =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
@@ -464,6 +466,7 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseTargetHeight(quality);
         const qualityKey = targetHeight >= 2160 ? '4k' : (targetHeight >= 1440 ? '2k' : `${targetHeight}p`);
 
+        // 1. التحقق من المدة المسموحة
         let maxAllowedDuration = permissions.max_duration;
         if (userPlan === 'pro') {
             maxAllowedDuration = getMaxDurationForPro(qualityKey, format.toLowerCase());
@@ -476,6 +479,7 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
+        // 2. التحقق من الجودة المسموحة
         const isQualityAllowed = permissions.allowed_qualities.includes(qualityKey) || 
                                  permissions.allowed_qualities.includes(`${targetHeight}p`) ||
                                  (permissions.allowed_qualities.includes('4k') && targetHeight >= 2160) ||
@@ -487,6 +491,7 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
+        // 3. التحقق من الصيغة المسموحة
         if (!permissions.allowed_formats.includes(format.toLowerCase())) {
             return res.status(403).json({ 
                 message: `The selected format (${format}) is not available on the ${permissions.plan_name} plan.` 
@@ -516,21 +521,24 @@ app.post('/create-clip', async (req, res) => {
         res.status(202).json({ success: true, jobId });
 
         const isGif = format.toLowerCase() === 'gif';
-        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
+        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
 
+        // ==========================================
+        // 🎯 محدد الجودة الصارم والمباشر:
+        // يفضل AVC (H.264) + M4A، ويلتزم بالجودة المطلوبة بدقة دون هبوط صامت
+        // ==========================================
         let formatSelection = isAudioFormat(format)
-            ? (audioTrackId ? audioTrackId : 'bestaudio/best')
-            : `bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
+            ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
+            : `bestvideo[height=${targetHeight}][vcodec^=avc]+${baseAudio}/bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height=${targetHeight}]`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
         const finalOutputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
 
-        // تحميل سريع عبر Stream Copy مع تحديد مسار معالجة خفيف لتفادي خطأ -9
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
-            '--format-sort', 'res,vcodec:vp9,vcodec:avc,acodec:m4a',
+            '--format-sort', '+codec:avc:m4a,res',
             '--downloader-args', 'ffmpeg_i:-threads 2',
             '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
@@ -565,6 +573,7 @@ app.post('/create-clip', async (req, res) => {
                     fullStderr: ytdlpFullStderr
                 }, null, 2));
 
+                // توضيح سبب الرفض إذا كانت الجودة غير متوفرة أصلاً على يوتيوب
                 if (ytdlpFullStderr.includes('Requested format is not available')) {
                     jobs[jobId].status = 'failed';
                     jobs[jobId].error = `Requested ${quality} quality is not available for this video on YouTube.`;
@@ -605,7 +614,7 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // معالجة FFmpeg خفيفة ومحددة بـ 2 مسارات (threads=2) لتفادي انهيار الرام
+            // FFmpeg Pipeline مع تقييد المسارات (threads=2)
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -673,7 +682,7 @@ app.post('/create-clip', async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز H.264 فائق السرعة ومحدد بمسارين لمنع امتلاء الرام نهائياً
+                // ترميز H.264 محمي الذاكرة لتفادي انهيار الرام
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
