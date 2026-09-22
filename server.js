@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. المنفذ والرابط العام
+// 1. المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -71,7 +71,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وتفعيل الكوكيز الإجباري لتخطي الحظر
+// 5. مسارات الأدوات وإعداد الكوكيز
 // =============================================================
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
@@ -85,9 +85,9 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
-        console.log('🍪 تم تفعيل ملف الكوكيز بنجاح لتخطي حظر يوتيوب.');
+        console.log('🍪 Session credentials loaded successfully.');
     } catch (err) {
-        console.error('❌ خطأ في معالجة الكوكيز:', err);
+        console.error('❌ Credentials processing error.');
     }
 }
 
@@ -105,7 +105,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    // استخدام الكوكيز تلقائياً دائماً عند وجودها
     if (hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
@@ -121,19 +120,19 @@ function spawnYtDlp(args) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات (Free: 720p, Basic: 1080p, Pro: 4K)
+// 6. تعريف صلاحيات الباقات الثلاث (Free, Basic, Pro)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120, // دقيقتان
+        max_duration: 120,
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800, // 30 دقيقة
+        max_duration: 1800,
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -219,7 +218,9 @@ function sanitizeFilename(name) {
     return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
 }
 
-// مسار فحص صحة السيرفر
+// =============================================================
+// المسارات العامة (Health & Root)
+// =============================================================
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -230,18 +231,16 @@ app.get('/', (req, res) => {
     });
 });
 
-app.get('/health', (req, res) => {
+const handleHealth = (req, res) => {
     res.status(200).json({ status: 'ok', service: 'cuttertube-server' });
-});
-
-app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok', service: 'cuttertube-server' });
-});
+};
+app.get('/health', handleHealth);
+app.get('/api/health', handleHealth);
 
 // =============================================================
 // GET /video-metadata
 // =============================================================
-const handleVideoMetadata = async (req, res) => {
+async function handleVideoMetadata(req, res) {
     const videoId = req.query.videoId || req.body?.videoId;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
 
@@ -365,8 +364,7 @@ const handleVideoMetadata = async (req, res) => {
             res.status(500).json({ message: 'Failed to process video metadata.', details: e.message });
         }
     });
-};
-
+}
 app.get('/video-metadata', handleVideoMetadata);
 app.post('/video-metadata', handleVideoMetadata);
 app.get('/api/video-metadata', handleVideoMetadata);
@@ -375,7 +373,7 @@ app.post('/api/video-metadata', handleVideoMetadata);
 // =============================================================
 // GET /user-status
 // =============================================================
-const handleUserStatus = async (req, res) => {
+async function handleUserStatus(req, res) {
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -403,14 +401,14 @@ const handleUserStatus = async (req, res) => {
         console.error("[/user-status Error]:", error.message);
         res.status(500).json({ message: "A server error occurred." });
     }
-};
+}
 app.get('/user-status', handleUserStatus);
 app.get('/api/user-status', handleUserStatus);
 
 // =============================================================
 // GET /progress/:jobId
 // =============================================================
-const handleProgress = (req, res) => {
+function handleProgress(req, res) {
     const { jobId } = req.params;
     
     res.setHeader('Content-Type', 'text/event-stream');
@@ -444,14 +442,14 @@ const handleProgress = (req, res) => {
     req.on('close', () => {
         clearInterval(intervalId);
     });
-};
+}
 app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip (قص وتنزيل 1080p و 4K المباشر والسريع)
+// POST /create-clip
 // =============================================================
-const handleCreateClip = async (req, res) => {
+async function handleCreateClip(req, res) {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
@@ -533,11 +531,10 @@ const handleCreateClip = async (req, res) => {
 
         const totalDuration = endTime - startTime;
         const isGif = format.toLowerCase() === 'gif';
-        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
+        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
 
-        // محدد الجودة المباشر لـ 1080p و 4K
         let formatSelection = isAudioFormat(format)
-            ? (audioTrackId ? audioTrackId : 'bestaudio/best')
+            ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
             : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
@@ -689,7 +686,6 @@ const handleCreateClip = async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز خفيف وسريع متوافق مع MP4
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -715,7 +711,9 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-});
+}
+app.post('/create-clip', handleCreateClip);
+app.post('/api/create-clip', handleCreateClip);
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -777,8 +775,10 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 }
 
+// =============================================================
 // GET /download/:tempFilename/:finalFilename
-const handleDownload = (req, res) => {
+// =============================================================
+function handleDownload(req, res) {
     try {
         const { tempFilename, finalFilename } = req.params;
         const decodedFinalFilename = decodeURIComponent(finalFilename);
@@ -798,7 +798,7 @@ const handleDownload = (req, res) => {
         console.error("[Download Error]", error);
         res.status(500).send("An internal server error occurred.");
     }
-};
+}
 app.get('/download/:tempFilename/:finalFilename', handleDownload);
 app.get('/api/download/:tempFilename/:finalFilename', handleDownload);
 
