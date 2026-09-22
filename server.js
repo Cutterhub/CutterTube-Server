@@ -90,7 +90,6 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
-// دالة بناء أوامر yt-dlp مع تفعيل PO Token التلقائي
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
@@ -223,7 +222,7 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// GET / (فحص الاتصال المباشر مع مزود التوكنات)
+// مسار فحص صحة السيرفر
 // =============================================================
 app.get('/', async (req, res) => {
     const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
@@ -274,8 +273,6 @@ const handleVideoMetadata = async (req, res) => {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
-    
-    // استخدام spawnYtDlp المضمونة من بايثون
     const ytdlp = spawnYtDlp(ytdlpArgs);
     
     let output = '';
@@ -437,7 +434,7 @@ app.get('/user-status', handleUserStatus);
 app.get('/api/user-status', handleUserStatus);
 
 // =============================================================
-// GET /progress/:jobId
+// GET /progress/:jobId (SSE Stream)
 // =============================================================
 const handleProgress = (req, res) => {
     const { jobId } = req.params;
@@ -741,7 +738,9 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-});
+};
+app.post('/create-clip', handleCreateClip);
+app.post('/api/create-clip', handleCreateClip);
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -775,30 +774,17 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                 try {
                     if (!clipMetadata.userId) return;
                     const insertData = {
-                        id: jobId,
                         user_id: clipMetadata.userId,
-                        youtube_id: clipMetadata.videoId,
-                        youtube_url: clipMetadata.videoUrl,
-                        title: clipMetadata.name,
-                        channel_title: '',
-                        thumbnail_url: `https://i.ytimg.com/vi/${clipMetadata.videoId}/hqdefault.jpg`,
-                        original_duration: clipMetadata.duration || 0,
-                        start_time: Number(clipMetadata.startTime),
-                        end_time: Number(clipMetadata.endTime),
-                        clip_duration: Number(clipMetadata.duration),
-                        cost: 1,
-                        comment: `format:${clipMetadata.format}`,
-                        is_saved: false
+                        name: clipMetadata.name,
+                        video_url: clipMetadata.videoUrl,
+                        start_time_seconds: Math.round(clipMetadata.startTime),
+                        end_time_seconds: Math.round(clipMetadata.endTime),
+                        quality: clipMetadata.quality,
+                        format: clipMetadata.format
                     };
-
-                    const { error } = await supabase.from('clips').insert(insertData);
-                    if (error) {
-                        console.error(`[Job ${jobId}] ❌ DB Log Error:`, error.message);
-                    } else {
-                        console.log(`[Job ${jobId}] ✅ Clip successfully logged to public.clips.`);
-                    }
+                    await supabase.from('clips').insert(insertData);
                 } catch (dbError) { 
-                    console.error(`[Job ${jobId}] ❌ DB Exception:`, dbError.message); 
+                    console.error(`[Job ${jobId}] DB Log Warning:`, dbError.message); 
                 }
             }
             logClipToDatabase();
