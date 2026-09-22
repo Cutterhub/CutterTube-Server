@@ -2,7 +2,7 @@ FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# تثبيت الحزم الأساسية و Python مع pip
+# 1. تثبيت الحزم الأساسية و Python مع pip
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ffmpeg \
@@ -12,12 +12,8 @@ RUN apt-get update \
        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# تثبيت أحدث إصدار Nightly من yt-dlp
-RUN curl -L https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
-
-# تثبيت إضافة توليد الـ PO Token لـ yt-dlp
-RUN python3 -m pip install -U bgutil-ytdlp-pot-provider --break-system-packages
+# 2. تثبيت yt-dlp مع إضافة PO Token معاً داخل بيئة Python
+RUN python3 -m pip install -U yt-dlp bgutil-ytdlp-pot-provider --break-system-packages
 
 COPY package*.json ./
 RUN npm ci --omit=dev
