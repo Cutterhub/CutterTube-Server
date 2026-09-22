@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام (Railway / Linux)
+// 1. تحديد المنفذ والرابط العام
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -73,7 +73,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 // =============================================================
 // 5. مسارات الأدوات وإعداد PO Token Provider
 // =============================================================
-const YTDLP_PATH = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
+const YTDLP_PATH = process.env.YTDLP_PATH || 'yt-dlp';
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
@@ -102,7 +102,10 @@ function getBaseYtDlpArgs(extraArgs = []) {
     ];
 
     const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    
+    // تمرير خادم التوكنات وعميل mweb المعتمد لـ BotGuard
     args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
+    args.push('--extractor-args', 'youtube:player_client=mweb,web,default');
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
@@ -183,16 +186,10 @@ function extractUserIdFromToken(token) {
 
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') {
-        return 'pro';
-    }
-    if (userRow.is_pro === true) {
-        return 'pro';
-    }
+    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
+    if (userRow.is_pro === true) return 'pro';
     const plan = String(userRow.plan || 'free').toLowerCase().trim();
-    if (['free', 'basic', 'pro'].includes(plan)) {
-        return plan;
-    }
+    if (['free', 'basic', 'pro'].includes(plan)) return plan;
     if (userRow.role === 'basic') return 'basic';
     return 'free';
 }
@@ -223,7 +220,50 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// الدالة الموحدة لمعالجة جلب معلومات الفيديو (Metadata Handler)
+// GET / (فحص الاتصال المباشر مع مزود التوكنات)
+// =============================================================
+app.get('/', async (req, res) => {
+    const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    let potReachable = false;
+    let potResponse = null;
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        const pingRes = await fetch(`${potUrl}/ping`, { signal: controller.signal });
+        clearTimeout(timeout);
+        potReachable = pingRes.ok;
+        potResponse = await pingRes.text();
+    } catch (err) {
+        potReachable = false;
+        potResponse = err.message;
+    }
+
+    res.json({ 
+        status: 'online', 
+        service: 'CutterTube Processing API', 
+        version: '1.0.0',
+        pot_provider_url: potUrl,
+        pot_provider_reachable: potReachable,
+        pot_provider_status: potResponse,
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        service: 'cuttertube-server',
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok', service: 'cuttertube-server' });
+});
+
+// =============================================================
+// GET /video-metadata
 // =============================================================
 const handleVideoMetadata = async (req, res) => {
     const videoId = req.query.videoId || req.body?.videoId;
@@ -351,34 +391,10 @@ const handleVideoMetadata = async (req, res) => {
     });
 };
 
-// تسجيل المسار بكل الطرق الممكنة لتفادي أخطاء Cannot GET / POST
 app.get('/video-metadata', handleVideoMetadata);
 app.post('/video-metadata', handleVideoMetadata);
 app.get('/api/video-metadata', handleVideoMetadata);
 app.post('/api/video-metadata', handleVideoMetadata);
-
-// =============================================================
-// مسارات التحقق والصحة
-// =============================================================
-const handleHealth = (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        service: 'cuttertube-server',
-        timestamp: new Date().toISOString()
-    });
-};
-app.get('/health', handleHealth);
-app.get('/api/health', handleHealth);
-
-app.get('/', (req, res) => {
-    res.json({ 
-        status: 'online', 
-        service: 'CutterTube Processing API', 
-        version: '1.0.0',
-        pot_provider: Boolean(process.env.BGUTIL_POT_PROVIDER_URL),
-        timestamp: new Date().toISOString()
-    });
-});
 
 // =============================================================
 // GET /user-status
@@ -416,7 +432,7 @@ app.get('/user-status', handleUserStatus);
 app.get('/api/user-status', handleUserStatus);
 
 // =============================================================
-// GET /progress/:jobId (SSE Stream)
+// GET /progress/:jobId
 // =============================================================
 const handleProgress = (req, res) => {
     const { jobId } = req.params;
@@ -720,9 +736,7 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-};
-app.post('/create-clip', handleCreateClip);
-app.post('/api/create-clip', handleCreateClip);
+});
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -756,6 +770,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                 try {
                     if (!clipMetadata.userId) return;
                     const insertData = {
+                        id: jobId,
                         user_id: clipMetadata.userId,
                         name: clipMetadata.name,
                         video_url: clipMetadata.videoUrl,
