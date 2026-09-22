@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام (Railway / Linux)
+// 1. المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -20,7 +20,7 @@ const PUBLIC_API_URL = process.env.PUBLIC_API_URL ||
                        (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`);
 
 // =============================================================
-// 2. إعدادات CORS الديناميكية
+// 2. إعدادات CORS
 // =============================================================
 const allowedOrigins = (
     process.env.CORS_ORIGINS ||
@@ -63,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع المؤقتة (Volume)
+// 4. مجلد المقاطع المؤقتة
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 if (!fs.existsSync(CLIPS_DIR)) {
@@ -85,12 +85,12 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
+        console.log('🍪 Session credentials loaded successfully.');
     } catch (err) {
         console.error('❌ Credentials processing error.');
     }
 }
 
-// دالة بناء أوامر yt-dlp مع تقديم عملاء 1080p و 4K
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
@@ -103,7 +103,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
     const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
     args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
-    // تقديم web و web_embedded لجلب جودات 1080p و 1440p و 4K
     args.push('--extractor-args', 'youtube:player_client=web,web_embedded,mweb,default');
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
@@ -129,14 +128,14 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120, // دقيقتان
+        max_duration: 120,
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800, // 30 دقيقة
+        max_duration: 1800,
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -150,11 +149,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700; // 45 دقيقة
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
-    if (qualityKey === '720p') return 3600; // 60 دقيقة
-    return 7200; // 120 دقيقة
+    if (format === 'mp3') return 2700;
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
+    if (qualityKey === '720p') return 3600;
+    return 7200;
 }
 
 function parseTargetHeight(qualityStr) {
@@ -189,12 +188,8 @@ function extractUserIdFromToken(token) {
 
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') {
-        return 'pro';
-    }
-    if (userRow.is_pro === true) {
-        return 'pro';
-    }
+    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
+    if (userRow.is_pro === true) return 'pro';
     const plan = String(userRow.plan || 'free').toLowerCase().trim();
     if (['free', 'basic', 'pro'].includes(plan)) return plan;
     if (userRow.role === 'basic') return 'basic';
@@ -480,7 +475,7 @@ app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip (استخراج دقيق لـ 1080p و 1440p و 4K)
+// POST /create-clip
 // =============================================================
 const handleCreateClip = async (req, res) => {
     let jobId = null;
@@ -566,7 +561,6 @@ const handleCreateClip = async (req, res) => {
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
 
-        // محدد الجودة الذكي لدعم بث الـ DASH بدقة 1080p و 1440p و 4K
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
             : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+bestaudio/best`;
@@ -720,7 +714,6 @@ const handleCreateClip = async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز H.264 متوافق وسريع لكافة الشاشات
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -746,7 +739,9 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-});
+};
+app.post('/create-clip', handleCreateClip);
+app.post('/api/create-clip', handleCreateClip);
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -808,7 +803,9 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 }
 
+// =============================================================
 // GET /download/:tempFilename/:finalFilename
+// =============================================================
 const handleDownload = (req, res) => {
     try {
         const { tempFilename, finalFilename } = req.params;
