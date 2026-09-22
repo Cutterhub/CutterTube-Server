@@ -125,14 +125,14 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120,
+        max_duration: 120, // دقيقتان
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -146,11 +146,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700;
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
-    if (qualityKey === '720p') return 3600;
-    return 7200;
+    if (format === 'mp3') return 2700; // 45 دقيقة
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
+    if (qualityKey === '720p') return 3600; // 60 دقيقة
+    return 7200; // 120 دقيقة
 }
 
 function parseTargetHeight(qualityStr) {
@@ -170,44 +170,71 @@ function isAudioFormat(format) {
     return ['mp3', 'wav'].includes((format || '').toLowerCase());
 }
 
-function extractUserIdFromToken(token) {
+// دالة فك التوكن واستخراج المعرف والإيميل معاً
+function extractTokenData(token) {
     try {
         const parts = token.split('.');
         if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-            return payload.sub || payload.id || null;
+            return {
+                id: payload.sub || payload.id || null,
+                email: payload.email || null,
+                role: payload.role || null
+            };
         }
-    } catch (e) {
-        return null;
-    }
-    return null;
+    } catch (e) {}
+    return { id: null, email: null, role: null };
 }
 
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
-    if (userRow.is_pro === true) return 'pro';
+    const email = (userRow.email || '').trim().toLowerCase();
+    if (userRow.is_admin === true || userRow.role === 'admin' || email === 'admin@cuttertube.com' || email === 'abdela456a@gmail.com') {
+        return 'pro';
+    }
+    if (userRow.is_pro === true) {
+        return 'pro';
+    }
     const plan = String(userRow.plan || 'free').toLowerCase().trim();
     if (['free', 'basic', 'pro'].includes(plan)) return plan;
     if (userRow.role === 'basic') return 'basic';
     return 'free';
 }
 
-async function getUserProfileData(userId) {
-    if (!userId) return null;
-    let { data: userRow } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
+// دالة البحث الذكية بالـ ID والـ Email معاً
+async function getUserProfileData(userId, userEmail) {
+    if (!userId && !userEmail) return null;
+    
+    let userRow = null;
 
-    if (!userRow) {
-        const { data: profileRow } = await supabase
+    // 1. البحث بالـ ID
+    if (userId) {
+        const { data } = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
+        if (data) userRow = data;
+    }
+
+    // 2. إذا لم يُعثر عليه، البحث بالإيميل
+    if (!userRow && userEmail) {
+        const { data } = await supabase
+            .from('users')
+            .select('*')
+            .eq('email', userEmail.trim().toLowerCase())
+            .maybeSingle();
+        if (data) userRow = data;
+    }
+
+    // 3. محاولة احتياطية من جدول profiles
+    if (!userRow && userId) {
+        const { data } = await supabase
             .from('profiles')
             .select('*')
             .eq('id', userId)
             .maybeSingle();
-        userRow = profileRow;
+        if (data) userRow = data;
     }
 
     return userRow;
@@ -380,14 +407,20 @@ async function handleUserStatus(req, res) {
             return res.status(401).json({ message: 'Unauthorized' });
         }
         const token = authHeader.split(' ')[1];
-        let userId = extractUserIdFromToken(token);
+        const tokenData = extractTokenData(token);
+
+        let userId = tokenData.id;
+        let userEmail = tokenData.email;
 
         if (!userId) {
             const { data: { user } } = await supabase.auth.getUser(token);
-            if (user) userId = user.id;
+            if (user) {
+                userId = user.id;
+                userEmail = user.email;
+            }
         }
 
-        const userRow = await getUserProfileData(userId);
+        const userRow = await getUserProfileData(userId, userEmail);
         const plan = resolveUserPlan(userRow);
 
         res.json({
@@ -447,30 +480,41 @@ app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip
+// POST /create-clip (معالجة الباقات بالـ ID والـ Email المزدوج)
 // =============================================================
 async function handleCreateClip(req, res) {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
         let userId = null;
+        let userEmail = req.body?.email || null;
         let userPlan = 'free';
 
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
-            userId = extractUserIdFromToken(token);
+            const tokenData = extractTokenData(token);
             
+            userId = tokenData.id;
+            if (!userEmail) userEmail = tokenData.email;
+
             if (!userId) {
                 try {
                     const { data: { user: authUser } } = await supabase.auth.getUser(token);
-                    if (authUser) userId = authUser.id;
+                    if (authUser) {
+                        userId = authUser.id;
+                        if (!userEmail) userEmail = authUser.email;
+                    }
                 } catch (e) {}
             }
 
-            if (userId) {
-                const userRow = await getUserProfileData(userId);
-                userPlan = resolveUserPlan(userRow);
-            }
+            // فحص البروفايل بالـ ID والـ Email
+            const userRow = await getUserProfileData(userId, userEmail);
+            userPlan = resolveUserPlan(userRow);
+            console.log(`👤 [User Identified] ID: ${userId} | Email: ${userEmail} | Plan: ${userPlan.toUpperCase()}`);
+        } else if (req.body?.userId || req.body?.user_id || req.body?.email) {
+            // التحقق الاحتياطي بالبيانات المرسلة
+            const userRow = await getUserProfileData(req.body.userId || req.body.user_id, req.body.email);
+            userPlan = resolveUserPlan(userRow);
         }
 
         const permissions = PLAN_PERMISSIONS[userPlan] || PLAN_PERMISSIONS['free'];
@@ -686,6 +730,7 @@ async function handleCreateClip(req, res) {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
+                // ترميز خفيف وسريع متوافق مع MP4
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -749,12 +794,18 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                     const insertData = {
                         id: jobId,
                         user_id: clipMetadata.userId,
-                        name: clipMetadata.name,
-                        video_url: clipMetadata.videoUrl,
-                        start_time_seconds: Math.round(clipMetadata.startTime),
-                        end_time_seconds: Math.round(clipMetadata.endTime),
-                        quality: clipMetadata.quality,
-                        format: clipMetadata.format
+                        youtube_id: clipMetadata.videoId,
+                        youtube_url: clipMetadata.videoUrl,
+                        title: clipMetadata.name,
+                        channel_title: '',
+                        thumbnail_url: `https://i.ytimg.com/vi/${clipMetadata.videoId}/hqdefault.jpg`,
+                        original_duration: clipMetadata.duration || 0,
+                        start_time: Number(clipMetadata.startTime),
+                        end_time: Number(clipMetadata.endTime),
+                        clip_duration: Number(clipMetadata.duration),
+                        cost: 1,
+                        comment: `format:${clipMetadata.format}`,
+                        is_saved: false
                     };
                     await supabase.from('clips').insert(insertData);
                 } catch (dbError) { 
@@ -786,10 +837,16 @@ function handleDownload(req, res) {
 
         if (fs.existsSync(filePath)) {
             res.download(filePath, decodedFinalFilename, (err) => {
-                if (err) console.error("[Download] Error sending file:", err);
-                fs.unlink(filePath, (unlinkErr) => {
-                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
-                });
+                try {
+                    if (fs.existsSync(filePath)) {
+                        fs.unlinkSync(filePath);
+                        console.log(`🧹 Temp file ${tempFilename} cleaned up.`);
+                    }
+                } catch (cleanupErr) {}
+
+                if (err && err.code !== 'ECONNABORTED') {
+                    console.error("[Download Note]:", err.message);
+                }
             });
         } else {
             res.status(404).send('File not found or has already been downloaded.');
