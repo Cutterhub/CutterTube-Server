@@ -182,7 +182,6 @@ function extractUserIdFromToken(token) {
     return null;
 }
 
-// دالة تحديد الخطة بناءً على users.plan مع دعم Admin و is_pro
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
     if (userRow.is_admin === true || userRow.role === 'admin') {
@@ -201,20 +200,11 @@ function resolveUserPlan(userRow) {
 
 async function getUserProfileData(userId) {
     if (!userId) return null;
-    let { data: userRow } = await supabase
+    const { data: userRow } = await supabase
         .from('users')
         .select('*')
         .eq('id', userId)
         .maybeSingle();
-
-    if (!userRow) {
-        const { data: profileRow } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .maybeSingle();
-        userRow = profileRow;
-    }
 
     return userRow;
 }
@@ -244,7 +234,7 @@ app.get('/', (req, res) => {
 });
 
 // =============================================================
-// GET /video-metadata (كشف الجودات الحقيقية المتاحة بدقة)
+// GET /video-metadata
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -271,7 +261,6 @@ app.get('/video-metadata', async (req, res) => {
         try {
             const info = JSON.parse(output);
 
-            // استخراج الجودات المتوفرة فقط بدون تخمين
             const standardHeights = [144, 240, 360, 480, 720, 1080, 1440, 2160];
             const detectedHeights = new Set();
 
@@ -373,9 +362,7 @@ app.get('/video-metadata', async (req, res) => {
     });
 });
 
-// =============================================================
 // GET /user-status
-// =============================================================
 app.get('/user-status', async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
@@ -406,9 +393,7 @@ app.get('/user-status', async (req, res) => {
     }
 });
 
-// =============================================================
-// GET /progress/:jobId (SSE Stream)
-// =============================================================
+// GET /progress/:jobId
 app.get('/progress/:jobId', (req, res) => {
     const { jobId } = req.params;
     
@@ -446,7 +431,7 @@ app.get('/progress/:jobId', (req, res) => {
 });
 
 // =============================================================
-// POST /create-clip (معالجة 4K و 1080p الذكية وحماية الباقات)
+// POST /create-clip (معالجة 1080p و 4K المحمية من امتلاء الرام)
 // =============================================================
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
@@ -479,7 +464,6 @@ app.post('/create-clip', async (req, res) => {
         const targetHeight = parseTargetHeight(quality);
         const qualityKey = targetHeight >= 2160 ? '4k' : (targetHeight >= 1440 ? '2k' : `${targetHeight}p`);
 
-        // 1. التحقق من المدة المسموحة
         let maxAllowedDuration = permissions.max_duration;
         if (userPlan === 'pro') {
             maxAllowedDuration = getMaxDurationForPro(qualityKey, format.toLowerCase());
@@ -492,7 +476,6 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        // 2. التحقق من الجودة المسموحة
         const isQualityAllowed = permissions.allowed_qualities.includes(qualityKey) || 
                                  permissions.allowed_qualities.includes(`${targetHeight}p`) ||
                                  (permissions.allowed_qualities.includes('4k') && targetHeight >= 2160) ||
@@ -504,7 +487,6 @@ app.post('/create-clip', async (req, res) => {
             });
         }
 
-        // 3. التحقق من الصيغة المسموحة
         if (!permissions.allowed_formats.includes(format.toLowerCase())) {
             return res.status(403).json({ 
                 message: `The selected format (${format}) is not available on the ${permissions.plan_name} plan.` 
@@ -519,10 +501,12 @@ app.post('/create-clip', async (req, res) => {
 
         const clipMetadata = { 
             userId: userId, 
-            name: title, 
+            videoId: videoId,
+            name: cleanTitle, 
             videoUrl, 
             startTime, 
             endTime, 
+            duration,
             quality, 
             format, 
             plan: userPlan 
@@ -531,11 +515,9 @@ app.post('/create-clip', async (req, res) => {
         jobs[jobId] = { status: 'starting', progress: 0, tempFile: `${jobId}.${format}`, finalFile: finalFilename };
         res.status(202).json({ success: true, jobId });
 
-        const totalDuration = endTime - startTime;
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio';
 
-        // محدد الجودة مع تفضيل كودك VP9 و AVC لتسريع المعالجة وتفادي مشاكل AV1
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
             : `bestvideo[height=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
@@ -544,11 +526,13 @@ app.post('/create-clip', async (req, res) => {
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
         const finalOutputPath = path.join(CLIPS_DIR, jobs[jobId].tempFile);
 
+        // تحميل سريع عبر Stream Copy مع تحديد مسار معالجة خفيف لتفادي خطأ -9
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
-            '--force-keyframes-at-cuts',
             '--format-sort', 'res,vcodec:vp9,vcodec:avc,acodec:m4a',
+            '--downloader-args', 'ffmpeg_i:-threads 2',
+            '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
             '--ffmpeg-location', FFMPEG_PATH,
             '-o', rawClipPath
@@ -621,10 +605,11 @@ app.post('/create-clip', async (req, res) => {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // FFmpeg Render Pipeline
+            // معالجة FFmpeg خفيفة ومحددة بـ 2 مسارات (threads=2) لتفادي انهيار الرام
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
+                    '-threads', '2',
                     '-i', actualRawPath,
                     '-vf', `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen`,
                     '-y', palettePath
@@ -645,6 +630,7 @@ app.post('/create-clip', async (req, res) => {
                     filterComplex += `[x];[x][1:v]paletteuse`;
 
                     const gifArgs = [
+                        '-threads', '2',
                         '-i', actualRawPath,
                         '-i', palettePath,
                         '-filter_complex', filterComplex,
@@ -652,13 +638,14 @@ app.post('/create-clip', async (req, res) => {
                         finalOutputPath
                     ];
                     const gifProcess = spawn(FFMPEG_PATH, gifArgs);
-                    handleFfmpegProcess(gifProcess, jobId, totalDuration, clipMetadata, () => {
+                    handleFfmpegProcess(gifProcess, jobId, duration, clipMetadata, () => {
                         if (fs.existsSync(palettePath)) fs.unlinkSync(palettePath);
                         if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                     });
                 });
             } else if (isAudioFormat(format)) {
                 let ffmpegArgs = [
+                    '-threads', '2',
                     '-i', actualRawPath,
                     '-vn'
                 ];
@@ -667,11 +654,11 @@ app.post('/create-clip', async (req, res) => {
                 ffmpegArgs.push('-y', '-progress', 'pipe:1', finalOutputPath);
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
-                handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
+                handleFfmpegProcess(ffmpegProcess, jobId, duration, clipMetadata, () => {
                     if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                 });
             } else {
-                let ffmpegArgs = ['-i', actualRawPath];
+                let ffmpegArgs = ['-threads', '2', '-i', actualRawPath];
                 let filters = [];
 
                 if (permissions.watermark) {
@@ -686,8 +673,8 @@ app.post('/create-clip', async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز H.264 متوافق مع MP4 لكافة أجهزة العرض
-                ffmpegArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22');
+                // ترميز H.264 فائق السرعة ومحدد بمسارين لمنع امتلاء الرام نهائياً
+                ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
                     ffmpegArgs.push('-an');
@@ -698,7 +685,7 @@ app.post('/create-clip', async (req, res) => {
                 ffmpegArgs.push('-y', '-progress', 'pipe:1', finalOutputPath);
 
                 const ffmpegProcess = spawn(FFMPEG_PATH, ffmpegArgs);
-                handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, () => {
+                handleFfmpegProcess(ffmpegProcess, jobId, duration, clipMetadata, () => {
                     if (subPath && fs.existsSync(subPath)) fs.unlinkSync(subPath);
                     if (fs.existsSync(actualRawPath)) fs.unlinkSync(actualRawPath);
                 });
@@ -744,19 +731,31 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
 
             async function logClipToDatabase() {
                 try {
-                    if (!clipMetadata.userId) return;
                     const insertData = {
-                        user_id: clipMetadata.userId,
-                        name: clipMetadata.name,
-                        video_url: clipMetadata.videoUrl,
-                        start_time_seconds: Math.round(clipMetadata.startTime),
-                        end_time_seconds: Math.round(clipMetadata.endTime),
-                        quality: clipMetadata.quality,
-                        format: clipMetadata.format
+                        id: jobId,
+                        user_id: clipMetadata.userId || null,
+                        youtube_id: clipMetadata.videoId,
+                        youtube_url: clipMetadata.videoUrl,
+                        title: clipMetadata.name,
+                        channel_title: '',
+                        thumbnail_url: `https://i.ytimg.com/vi/${clipMetadata.videoId}/hqdefault.jpg`,
+                        original_duration: clipMetadata.duration || 0,
+                        start_time: Number(clipMetadata.startTime),
+                        end_time: Number(clipMetadata.endTime),
+                        clip_duration: Number(clipMetadata.duration),
+                        cost: 1,
+                        comment: `format:${clipMetadata.format}`,
+                        is_saved: false
                     };
-                    await supabase.from('clips').insert(insertData);
+
+                    const { error } = await supabase.from('clips').insert(insertData);
+                    if (error) {
+                        console.error(`[Job ${jobId}] ❌ DB Log Error:`, error.message);
+                    } else {
+                        console.log(`[Job ${jobId}] ✅ Clip successfully logged to public.clips.`);
+                    }
                 } catch (dbError) { 
-                    console.error(`[Job ${jobId}] DB Log Warning:`, dbError.message); 
+                    console.error(`[Job ${jobId}] ❌ DB Exception:`, dbError.message); 
                 }
             }
             logClipToDatabase();
