@@ -90,6 +90,7 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
+// دالة بناء أوامر yt-dlp مع تقديم عملاء 1080p و 4K
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
@@ -102,7 +103,8 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
     const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
     args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
-    args.push('--extractor-args', 'youtube:player_client=mweb,web,default');
+    // تقديم web و web_embedded لجلب جودات 1080p و 1440p و 4K
+    args.push('--extractor-args', 'youtube:player_client=web,web_embedded,mweb,default');
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
@@ -115,7 +117,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
     return [...args, ...extraArgs];
 }
 
-// تشغيل yt-dlp من داخل بيئة بايثون لضمان تحميل إضافة bgutil
 function spawnYtDlp(args) {
     return spawn('python3', ['-m', 'yt_dlp', ...args]);
 }
@@ -128,17 +129,17 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120,
+        max_duration: 120, // دقيقتان
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
-        allowed_formats: ['mp4', 'mp3']
+        allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
     },
     pro: {
         plan_name: 'Pro',
@@ -149,11 +150,11 @@ const PLAN_PERMISSIONS = {
 };
 
 function getMaxDurationForPro(qualityKey, format) {
-    if (format === 'mp3') return 2700;
-    if (qualityKey === '4k' || qualityKey === '2160p') return 900;
-    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800;
-    if (qualityKey === '720p') return 3600;
-    return 7200;
+    if (format === 'mp3') return 2700; // 45 دقيقة
+    if (qualityKey === '4k' || qualityKey === '2160p') return 900; // 15 دقيقة
+    if (qualityKey === '2k' || qualityKey === '1440p' || qualityKey === '1080p') return 1800; // 30 دقيقة
+    if (qualityKey === '720p') return 3600; // 60 دقيقة
+    return 7200; // 120 دقيقة
 }
 
 function parseTargetHeight(qualityStr) {
@@ -188,8 +189,12 @@ function extractUserIdFromToken(token) {
 
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
-    if (userRow.is_pro === true) return 'pro';
+    if (userRow.is_admin === true || userRow.role === 'admin') {
+        return 'pro';
+    }
+    if (userRow.is_pro === true) {
+        return 'pro';
+    }
     const plan = String(userRow.plan || 'free').toLowerCase().trim();
     if (['free', 'basic', 'pro'].includes(plan)) return plan;
     if (userRow.role === 'basic') return 'basic';
@@ -222,7 +227,7 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// مسار فحص صحة السيرفر
+// مسارات التحقق والصحة
 // =============================================================
 app.get('/', async (req, res) => {
     const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
@@ -434,7 +439,7 @@ app.get('/user-status', handleUserStatus);
 app.get('/api/user-status', handleUserStatus);
 
 // =============================================================
-// GET /progress/:jobId (SSE Stream)
+// GET /progress/:jobId
 // =============================================================
 const handleProgress = (req, res) => {
     const { jobId } = req.params;
@@ -475,7 +480,7 @@ app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip
+// POST /create-clip (استخراج دقيق لـ 1080p و 1440p و 4K)
 // =============================================================
 const handleCreateClip = async (req, res) => {
     let jobId = null;
@@ -561,9 +566,10 @@ const handleCreateClip = async (req, res) => {
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
 
+        // محدد الجودة الذكي لدعم بث الـ DASH بدقة 1080p و 1440p و 4K
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
-            : `bestvideo[height<=${targetHeight}][vcodec^=avc]+${baseAudio}/bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/best`;
+            : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+bestaudio/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -572,6 +578,7 @@ const handleCreateClip = async (req, res) => {
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
+            '--format-sort', `res:${targetHeight},vcodec:vp9,vcodec:avc,acodec:m4a`,
             '--downloader-args', 'ffmpeg_i:-threads 2',
             '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
@@ -713,6 +720,7 @@ const handleCreateClip = async (req, res) => {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
+                // ترميز H.264 متوافق وسريع لكافة الشاشات
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -738,9 +746,7 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-};
-app.post('/create-clip', handleCreateClip);
-app.post('/api/create-clip', handleCreateClip);
+});
 
 function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, onCompleteCallback) {
     const job = jobs[jobId];
@@ -774,6 +780,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                 try {
                     if (!clipMetadata.userId) return;
                     const insertData = {
+                        id: jobId,
                         user_id: clipMetadata.userId,
                         name: clipMetadata.name,
                         video_url: clipMetadata.videoUrl,
