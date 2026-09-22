@@ -249,129 +249,30 @@ app.get('/', (req, res) => {
 // =============================================================
 // GET /video-metadata
 // =============================================================
-app.get('/video-metadata', async (req, res) => {
-    const { videoId } = req.query;
-    if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
-
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
-    const ytdlp = spawn(YTDLP_PATH, ytdlpArgs);
+// مسار فحص صحة السيرفر واتصال مزود التوكنات
+app.get('/', async (req, res) => {
+    let potConnected = false;
+    const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || process.env.POT_PROVIDER_URL;
     
-    let output = '';
-    let errorOutput = '';
-
-    ytdlp.stdout.on('data', (data) => output += data.toString());
-    ytdlp.stderr.on('data', (data) => errorOutput += data.toString());
-
-    ytdlp.on('close', (code) => {
-        if (code !== 0) {
-            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
-            return res.status(500).json({ 
-                message: 'Failed to fetch video details.',
-                details: errorOutput ? errorOutput.split('\n').filter(Boolean).slice(-2).join(' ') : 'Unknown error'
-            });
-        }
-
+    if (potUrl) {
         try {
-            const info = JSON.parse(output);
-
-            const standardHeights = [144, 240, 360, 480, 720, 1080, 1440, 2160];
-            const detectedHeights = new Set();
-
-            if (info.formats && Array.isArray(info.formats)) {
-                info.formats.forEach(f => {
-                    const hasValidVideo = f.vcodec && f.vcodec !== 'none' && !f.vcodec.startsWith('images');
-                    if (hasValidVideo && f.height && typeof f.height === 'number') {
-                        detectedHeights.add(f.height);
-                    }
-                });
-            }
-
-            const availableQualities = standardHeights
-                .filter(h => {
-                    for (const detected of detectedHeights) {
-                        if (detected === h || Math.abs(detected - h) <= 10) return true;
-                    }
-                    return false;
-                })
-                .map(h => h === 2160 ? '4k' : (h === 1440 ? '2k' : `${h}p`));
-
-            const audioTracks = [];
-            const languageMap = {};
-
-            if (info.formats) {
-                info.formats.forEach(f => {
-                    const hasAudio = f.acodec && f.acodec !== 'none';
-                    const hasNoVideo = !f.vcodec || f.vcodec === 'none';
-
-                    if (hasAudio && hasNoVideo) {
-                        const lang = f.language || f.lang || f.language_code || null;
-                        if (lang) {
-                            const name = f.language_preference || f.language_note || f.format_note || lang;
-                            const key = `${lang}_${name}`;
-                            if (!languageMap[key] || (f.tbr || 0) > (languageMap[key].tbr || 0)) {
-                                languageMap[key] = {
-                                    id: f.format_id,
-                                    language: lang,
-                                    language_name: name,
-                                    tbr: f.tbr || 0
-                                };
-                            }
-                        }
-                    }
-                });
-            }
-
-            if (info.audio_tracks && Array.isArray(info.audio_tracks)) {
-                info.audio_tracks.forEach(track => {
-                    const lang = track.id || track.language || 'unknown';
-                    const name = track.name || track.language_preference || lang;
-                    const key = `${lang}_${name}`;
-                    if (!languageMap[key]) {
-                        languageMap[key] = {
-                            id: track.id || track.format_id,
-                            language: lang,
-                            language_name: name,
-                            tbr: 0
-                        };
-                    }
-                });
-            }
-
-            for (const key in languageMap) {
-                audioTracks.push(languageMap[key]);
-            }
-
-            const subtitles = [];
-            if (info.subtitles) {
-                for (const lang in info.subtitles) {
-                    subtitles.push({
-                        id: lang,
-                        name: info.subtitles[lang][0]?.name || lang,
-                        is_auto: false
-                    });
-                }
-            }
-            if (info.automatic_captions) {
-                for (const lang in info.automatic_captions) {
-                    subtitles.push({
-                        id: lang,
-                        name: (info.automatic_captions[lang][0]?.name || lang) + ' (auto)',
-                        is_auto: true
-                    });
-                }
-            }
-
-            res.json({
-                availableQualities,
-                audioTracks,
-                subtitles
-            });
-
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 2000);
+            const pingRes = await fetch(`${potUrl}/ping`, { signal: controller.signal });
+            clearTimeout(timeout);
+            potConnected = pingRes.ok;
         } catch (e) {
-            console.error(`[Metadata Parse Error]: ${e.message}`);
-            res.status(500).json({ message: 'Failed to process video metadata.', details: e.message });
+            potConnected = false;
         }
+    }
+
+    res.json({ 
+        status: 'online', 
+        service: 'CutterTube Processing API', 
+        version: '1.0.0',
+        pot_provider_url: potUrl || 'NOT_CONFIGURED',
+        pot_provider_connected: potConnected,
+        timestamp: new Date().toISOString()
     });
 });
 
