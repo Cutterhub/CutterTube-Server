@@ -251,9 +251,10 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput.split('\n')[0]}`);
+            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
-                message: 'Failed to fetch video details. Please try again later.'
+                message: 'Failed to fetch video details.',
+                details: errorOutput || 'Unknown yt-dlp error' // 👈 إرجاع سبب الخطأ الحقيقي
             });
         }
 
