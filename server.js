@@ -71,7 +71,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وإعداد الكوكيز الاختيارية
+// 5. مسارات الأدوات وإعداد PO Token Provider
 // =============================================================
 const YTDLP_PATH = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
@@ -86,13 +86,12 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
-        console.log('🍪 Session credentials file written.');
     } catch (err) {
         console.error('❌ Credentials processing error.');
     }
 }
 
-// دالة مساعدة مع ترك استراتيجية yt-dlp التلقائية بدون فرض يدوي
+// دالة بناء أوامر yt-dlp مع دعم PO Token التلقائي
 function getBaseYtDlpArgs(extraArgs = []) {
     const args = [
         '--user-agent', USER_AGENT,
@@ -103,18 +102,18 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--js-runtimes', 'node'
     ];
 
+    // ربط مزود التوكنات الآلي عبر شبكة Railway الداخلية
+    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || process.env.POT_PROVIDER_URL;
+    if (potProviderUrl) {
+        args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
+    }
+
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    // استخدام الكوكيز فقط إذا كان المتغير مفعّلاً صراحة (USE_YOUTUBE_COOKIES=true)
     if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
-        console.log('🍪 yt-dlp using cookies for this request.');
-    }
-
-    if (process.env.EXTRACTOR_ARGS) {
-        args.push('--extractor-args', process.env.EXTRACTOR_ARGS);
     }
 
     return [...args, ...extraArgs];
@@ -128,14 +127,14 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120,
+        max_duration: 120, // دقيقتان
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -242,13 +241,13 @@ app.get('/', (req, res) => {
         status: 'online', 
         service: 'CutterTube Processing API', 
         version: '1.0.0',
-        use_cookies: process.env.USE_YOUTUBE_COOKIES === 'true',
+        pot_provider: Boolean(process.env.BGUTIL_POT_PROVIDER_URL),
         timestamp: new Date().toISOString()
     });
 });
 
 // =============================================================
-// GET /video-metadata (كشف الجودات الحقيقية النظيفة)
+// GET /video-metadata
 // =============================================================
 app.get('/video-metadata', async (req, res) => {
     const { videoId } = req.query;
@@ -266,7 +265,7 @@ app.get('/video-metadata', async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
                 message: 'Failed to fetch video details.',
                 details: errorOutput ? errorOutput.split('\n').filter(Boolean).slice(-2).join(' ') : 'Unknown error'
@@ -281,7 +280,6 @@ app.get('/video-metadata', async (req, res) => {
 
             if (info.formats && Array.isArray(info.formats)) {
                 info.formats.forEach(f => {
-                    // التحقق من وجود فيديو حقيقي وليس صورة أو لوحة قصة
                     const hasValidVideo = f.vcodec && f.vcodec !== 'none' && !f.vcodec.startsWith('images');
                     if (hasValidVideo && f.height && typeof f.height === 'number') {
                         detectedHeights.add(f.height);
@@ -445,9 +443,7 @@ app.get('/progress/:jobId', (req, res) => {
     });
 });
 
-// =============================================================
-// POST /create-clip (محدد جودة مرن وقوي لـ 1080p و 4K)
-// =============================================================
+// POST /create-clip
 app.post('/create-clip', async (req, res) => {
     let jobId = null;
     try {
@@ -532,7 +528,6 @@ app.post('/create-clip', async (req, res) => {
         const isGif = format.toLowerCase() === 'gif';
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
 
-        // محدد جودة ذكي: يبحث عن الجودة المطلوبة بـ AVC أولاً ثم يتقبل أي كودك آخر بنفس الارتفاع
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
             : `bestvideo[height<=${targetHeight}][vcodec^=avc]+${baseAudio}/bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/best`;
