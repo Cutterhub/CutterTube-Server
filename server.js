@@ -20,7 +20,7 @@ const PUBLIC_API_URL = process.env.PUBLIC_API_URL ||
                        (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${PORT}`);
 
 // =============================================================
-// 2. إعدادات CORS الديناميكية
+// 2. إعدادات CORS
 // =============================================================
 const allowedOrigins = (
     process.env.CORS_ORIGINS ||
@@ -63,7 +63,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // =============================================================
-// 4. مسار مجلد المقاطع المؤقتة (Volume)
+// 4. مجلد المقاطع المؤقتة
 // =============================================================
 const CLIPS_DIR = process.env.CLIPS_DIR || path.join(__dirname, 'clips');
 if (!fs.existsSync(CLIPS_DIR)) {
@@ -71,7 +71,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وإعداد PO Token Provider
+// 5. مسارات الأدوات وإعداد الكوكيز
 // =============================================================
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
@@ -85,6 +85,7 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
+        console.log('🍪 Session credentials loaded successfully.');
     } catch (err) {
         console.error('❌ Credentials processing error.');
     }
@@ -97,17 +98,14 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-check-certificates',
         '--no-playlist',
         '--force-ipv4',
-        '--js-runtimes', 'node'
+        '--js-runtimes', 'node',
+        '--extractor-args', 'youtube:player_client=web,default'
     ];
-
-    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
-    args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`);
-    args.push('--extractor-args', 'youtube:player_client=mweb,web,default');
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
+    if (hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
     }
@@ -115,7 +113,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
     return [...args, ...extraArgs];
 }
 
-// تشغيل yt-dlp من داخل بيئة بايثون لضمان تحميل إضافة bgutil
 function spawnYtDlp(args) {
     return spawn('python3', ['-m', 'yt_dlp', ...args]);
 }
@@ -123,22 +120,22 @@ function spawnYtDlp(args) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات الثلاث (Free, Basic, Pro)
+// 6. تعريف صلاحيات الباقات (العلامة المائية ملغاة للجميع)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120,
-        watermark: true,
+        max_duration: 120, // دقيقتان
+        watermark: false, // 👈 تم إلغاء العلامة المائية للوضع المجاني
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800,
+        max_duration: 1800, // 30 دقيقة
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
-        allowed_formats: ['mp4', 'mp3']
+        allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
     },
     pro: {
         plan_name: 'Pro',
@@ -222,52 +219,28 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// مسار فحص صحة السيرفر
+// المسارات العامة (Health & Root)
 // =============================================================
-app.get('/', async (req, res) => {
-    const potUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
-    let potReachable = false;
-    let potResponse = null;
-
-    try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 2500);
-        const pingRes = await fetch(`${potUrl}/ping`, { signal: controller.signal });
-        clearTimeout(timeout);
-        potReachable = pingRes.ok;
-        potResponse = await pingRes.text();
-    } catch (err) {
-        potReachable = false;
-        potResponse = err.message;
-    }
-
+app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
         service: 'CutterTube Processing API', 
         version: '1.0.0',
-        pot_provider_url: potUrl,
-        pot_provider_reachable: potReachable,
-        pot_provider_status: potResponse,
+        cookies_loaded: fs.existsSync(COOKIES_PATH) || fs.existsSync(path.join(__dirname, 'cookies.txt')),
         timestamp: new Date().toISOString()
     });
 });
 
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        service: 'cuttertube-server',
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.get('/api/health', (req, res) => {
+const handleHealth = (req, res) => {
     res.status(200).json({ status: 'ok', service: 'cuttertube-server' });
-});
+};
+app.get('/health', handleHealth);
+app.get('/api/health', handleHealth);
 
 // =============================================================
 // GET /video-metadata
 // =============================================================
-const handleVideoMetadata = async (req, res) => {
+async function handleVideoMetadata(req, res) {
     const videoId = req.query.videoId || req.body?.videoId;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
 
@@ -283,7 +256,7 @@ const handleVideoMetadata = async (req, res) => {
 
     ytdlp.on('close', (code) => {
         if (code !== 0) {
-            console.error(`[Metadata Error] Extraction failed (code ${code}): ${errorOutput}`);
+            console.error(`[Metadata Error] (code ${code}): ${errorOutput}`);
             return res.status(500).json({ 
                 message: 'Failed to fetch video details.',
                 details: errorOutput ? errorOutput.split('\n').filter(Boolean).slice(-2).join(' ') : 'Unknown error'
@@ -391,8 +364,7 @@ const handleVideoMetadata = async (req, res) => {
             res.status(500).json({ message: 'Failed to process video metadata.', details: e.message });
         }
     });
-};
-
+}
 app.get('/video-metadata', handleVideoMetadata);
 app.post('/video-metadata', handleVideoMetadata);
 app.get('/api/video-metadata', handleVideoMetadata);
@@ -401,7 +373,7 @@ app.post('/api/video-metadata', handleVideoMetadata);
 // =============================================================
 // GET /user-status
 // =============================================================
-const handleUserStatus = async (req, res) => {
+async function handleUserStatus(req, res) {
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -429,14 +401,14 @@ const handleUserStatus = async (req, res) => {
         console.error("[/user-status Error]:", error.message);
         res.status(500).json({ message: "A server error occurred." });
     }
-};
+}
 app.get('/user-status', handleUserStatus);
 app.get('/api/user-status', handleUserStatus);
 
 // =============================================================
-// GET /progress/:jobId (SSE Stream)
+// GET /progress/:jobId
 // =============================================================
-const handleProgress = (req, res) => {
+function handleProgress(req, res) {
     const { jobId } = req.params;
     
     res.setHeader('Content-Type', 'text/event-stream');
@@ -470,14 +442,14 @@ const handleProgress = (req, res) => {
     req.on('close', () => {
         clearInterval(intervalId);
     });
-};
+}
 app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
 // POST /create-clip
 // =============================================================
-const handleCreateClip = async (req, res) => {
+async function handleCreateClip(req, res) {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
@@ -563,7 +535,7 @@ const handleCreateClip = async (req, res) => {
 
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
-            : `bestvideo[height<=${targetHeight}][vcodec^=avc]+${baseAudio}/bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo[height<=?${targetHeight}]+${baseAudio}/best`;
+            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -572,6 +544,7 @@ const handleCreateClip = async (req, res) => {
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
+            '--format-sort', `res:${targetHeight},vcodec:vp9,vcodec:avc,acodec:m4a`,
             '--downloader-args', 'ffmpeg_i:-threads 2',
             '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
@@ -644,8 +617,7 @@ const handleCreateClip = async (req, res) => {
                 });
             }
 
-            const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
-
+            // معالجة الفيديو بدون أي علامة مائية
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -663,11 +635,7 @@ const handleCreateClip = async (req, res) => {
                         return; 
                     }
 
-                    let filterComplex = `fps=${fps},scale=${scale}:-1:flags=lanczos`;
-                    if (permissions.watermark) {
-                        filterComplex += `,${watermarkFilter}`;
-                    }
-                    filterComplex += `[x];[x][1:v]paletteuse`;
+                    const filterComplex = `fps=${fps},scale=${scale}:-1:flags=lanczos[x];[x][1:v]paletteuse`;
 
                     const gifArgs = [
                         '-threads', '2',
@@ -701,9 +669,6 @@ const handleCreateClip = async (req, res) => {
                 let ffmpegArgs = ['-threads', '2', '-i', actualRawPath];
                 let filters = [];
 
-                if (permissions.watermark) {
-                    filters.push(watermarkFilter);
-                }
                 if (subPath) {
                     const escapedSubPath = subPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
                     filters.push(`subtitles='${escapedSubPath}'`);
@@ -738,7 +703,7 @@ const handleCreateClip = async (req, res) => {
         }
         res.status(500).json({ message: "An error occurred while preparing your video." });
     }
-};
+}
 app.post('/create-clip', handleCreateClip);
 app.post('/api/create-clip', handleCreateClip);
 
@@ -774,6 +739,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
                 try {
                     if (!clipMetadata.userId) return;
                     const insertData = {
+                        id: jobId,
                         user_id: clipMetadata.userId,
                         name: clipMetadata.name,
                         video_url: clipMetadata.videoUrl,
@@ -801,8 +767,10 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 }
 
+// =============================================================
 // GET /download/:tempFilename/:finalFilename
-const handleDownload = (req, res) => {
+// =============================================================
+function handleDownload(req, res) {
     try {
         const { tempFilename, finalFilename } = req.params;
         const decodedFinalFilename = decodeURIComponent(finalFilename);
@@ -810,10 +778,16 @@ const handleDownload = (req, res) => {
 
         if (fs.existsSync(filePath)) {
             res.download(filePath, decodedFinalFilename, (err) => {
-                if (err) console.error("[Download] Error sending file:", err);
-                fs.unlink(filePath, (unlinkErr) => {
-                    if (unlinkErr) console.error("[Download] Cleanup error:", unlinkErr);
-                });
+                try {
+                    if (fs.existsSync(filePath)) {
+                        fs.unlinkSync(filePath);
+                        console.log(`🧹 Temp file ${tempFilename} cleaned up.`);
+                    }
+                } catch (cleanupErr) {}
+
+                if (err && err.code !== 'ECONNABORTED') {
+                    console.error("[Download Note]:", err.message);
+                }
             });
         } else {
             res.status(404).send('File not found or has already been downloaded.');
@@ -822,7 +796,7 @@ const handleDownload = (req, res) => {
         console.error("[Download Error]", error);
         res.status(500).send("An internal server error occurred.");
     }
-};
+}
 app.get('/download/:tempFilename/:finalFilename', handleDownload);
 app.get('/api/download/:tempFilename/:finalFilename', handleDownload);
 
