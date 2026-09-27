@@ -104,16 +104,14 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        // استخدام مزود التوكنات الداخلي
+        // تفعيل مزود التوكنات التلقائي
         '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
-        // استخدام عملاء آمنين يتجاوزون خطأ Reload
-        '--extractor-args', 'youtube:player_client=android,ios,web_safari'
+        '--extractor-args', 'youtube:player_client=mweb,web,default'
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    // عدم إرسال الكوكيز إلا إذا تم تفعيلها صراحة كـ true لتفادي خطأ Reload
     if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
@@ -121,6 +119,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
 
     return [...args, ...extraArgs];
 }
+
 function spawnYtDlp(args) {
     return spawn('python3', ['-m', 'yt_dlp', ...args]);
 }

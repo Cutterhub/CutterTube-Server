@@ -12,8 +12,8 @@ RUN apt-get update \
        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# تثبيت yt-dlp وإضافة التوكنات معاً عبر pip
-RUN python3 -m pip install -U yt-dlp bgutil-ytdlp-pot-provider --break-system-packages
+# تثبيت yt-dlp مع إطار التوكنات ومزود bgutil معاً
+RUN python3 -m pip install -U yt-dlp yt-dlp-get-pot bgutil-ytdlp-pot-provider --break-system-packages
 
 COPY package*.json ./
 RUN npm ci --omit=dev
