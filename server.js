@@ -190,6 +190,19 @@ function extractUserIdFromToken(token) {
     return null;
 }
 
+function extractUserEmailFromToken(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            return payload.email || null;
+        }
+    } catch (e) {
+        return null;
+    }
+    return null;
+}
+
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
     if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
@@ -200,24 +213,30 @@ function resolveUserPlan(userRow) {
     return 'free';
 }
 
-async function getUserProfileData(userId) {
-    if (!userId) return null;
-    let { data: userRow } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
+// دالة جلب البروفايل بالـ ID والـ Email من جدول profiles
+async function getUserProfileData(userId, userEmail) {
+    if (!userId && !userEmail) return null;
+    let profile = null;
 
-    if (!userRow) {
-        const { data: profileRow } = await supabase
+    if (userId) {
+        const { data } = await supabase
             .from('profiles')
             .select('*')
             .eq('id', userId)
             .maybeSingle();
-        userRow = profileRow;
+        if (data) profile = data;
     }
 
-    return userRow;
+    if (!profile && userEmail) {
+        const { data } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('email', userEmail.trim().toLowerCase())
+            .maybeSingle();
+        if (data) profile = data;
+    }
+
+    return profile;
 }
 
 function sanitizeFilename(name) {
@@ -388,13 +407,17 @@ async function handleUserStatus(req, res) {
         }
         const token = authHeader.split(' ')[1];
         let userId = extractUserIdFromToken(token);
+        let userEmail = extractUserEmailFromToken(token);
 
-        if (!userId) {
+        if (!userId || !userEmail) {
             const { data: { user } } = await supabase.auth.getUser(token);
-            if (user) userId = user.id;
+            if (user) {
+                userId = userId || user.id;
+                userEmail = userEmail || user.email;
+            }
         }
 
-        const userRow = await getUserProfileData(userId);
+        const userRow = await getUserProfileData(userId, userEmail);
         const plan = resolveUserPlan(userRow);
 
         res.json({
@@ -466,16 +489,20 @@ async function handleCreateClip(req, res) {
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
             userId = extractUserIdFromToken(token);
+            let userEmail = extractUserEmailFromToken(token);
             
-            if (!userId) {
+            if (!userId || !userEmail) {
                 try {
                     const { data: { user: authUser } } = await supabase.auth.getUser(token);
-                    if (authUser) userId = authUser.id;
+                    if (authUser) {
+                        userId = userId || authUser.id;
+                        userEmail = userEmail || authUser.email;
+                    }
                 } catch (e) {}
             }
 
-            if (userId) {
-                const userRow = await getUserProfileData(userId);
+            if (userId || userEmail) {
+                const userRow = await getUserProfileData(userId, userEmail);
                 userPlan = resolveUserPlan(userRow);
             }
         }
