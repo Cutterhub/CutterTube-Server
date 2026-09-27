@@ -99,7 +99,8 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        '--extractor-args', 'youtube:player_client=web,default'
+        // عملاء يوتيوب المعتمدة لتخطي خطأ The page needs to be reloaded
+        '--extractor-args', 'youtube:player_client=ios,android,mweb,web_embedded'
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
