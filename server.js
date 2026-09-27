@@ -787,30 +787,39 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
 // =============================================================
 // GET /download/:tempFilename/:finalFilename
 // =============================================================
+// =============================================================
+// مسار التحميل المباشر مع مهلة تنظيف ذكية (5 دقائق)
+// =============================================================
 function handleDownload(req, res) {
     try {
         const { tempFilename, finalFilename } = req.params;
         const decodedFinalFilename = decodeURIComponent(finalFilename);
         const filePath = path.join(CLIPS_DIR, tempFilename);
 
-        if (fs.existsSync(filePath)) {
-            res.download(filePath, decodedFinalFilename, (err) => {
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).send('File expired or not found. Please create clip again.');
+        }
+
+        // إجبار المتصفح على تحميل الملف مباشرة كملف مرفق
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(decodedFinalFilename)}"`);
+
+        res.download(filePath, decodedFinalFilename, (err) => {
+            if (err && err.code !== 'ECONNABORTED') {
+                console.error("[Download Note]:", err.message);
+            }
+            
+            // ⏰ حذف الملف المؤقت بأمان بعد 5 دقائق من أول طلب لتحميله
+            setTimeout(() => {
                 try {
                     if (fs.existsSync(filePath)) {
                         fs.unlinkSync(filePath);
-                        console.log(`🧹 Temp file ${tempFilename} cleaned up.`);
+                        console.log(`🧹 Temp file ${tempFilename} safely cleaned up after delay.`);
                     }
-                } catch (cleanupErr) {}
-
-                if (err && err.code !== 'ECONNABORTED') {
-                    console.error("[Download Note]:", err.message);
-                }
-            });
-        } else {
-            res.status(404).send('File not found or has already been downloaded.');
-        }
+                } catch (e) {}
+            }, 5 * 60 * 1000);
+        });
     } catch (error) {
-        console.error("[Download Error]", error);
+        console.error("[Download Error]:", error.message);
         res.status(500).send("An internal server error occurred.");
     }
 }
