@@ -104,15 +104,15 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        // تفعيل مزود التوكنات التلقائي
-        '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
-        '--extractor-args', 'youtube:player_client=mweb,web,default'
+        // استخدام مزود GetPOT
+        '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
+    // تمرير الكوكيز دائماً مع GetPOT لتوثيق التوكنات
+    if (hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
     }
