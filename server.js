@@ -438,18 +438,25 @@ app.get('/api/user-status', handleUserStatus);
 // =============================================================
 // GET /progress/:jobId
 // =============================================================
+// =============================================================
+// مسار شريط التقدم المحمي مع نبضات البقاء حياً (SSE Keep-Alive)
+// =============================================================
 function handleProgress(req, res) {
     const { jobId } = req.params;
     
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // لمنع البروكسي من حجز البيانات
     res.flushHeaders();
 
     if (!jobs[jobId]) {
         res.write(`event: error\ndata: ${JSON.stringify({ message: 'Job not found or already finished.' })}\n\n`);
         return res.end();
     }
+
+    // إرسال نبضة فورية للاتصال
+    res.write(`: ping\n\n`);
 
     const sendProgress = () => {
         const currentJob = jobs[jobId];
@@ -458,17 +465,25 @@ function handleProgress(req, res) {
             res.end();
             return;
         }
+
+        // إرسال نسبة التقدم الحالية
         res.write(`event: progress\ndata: ${JSON.stringify({ progress: currentJob.progress })}\n\n`);
+
         if (currentJob.status === 'completed') {
             res.write(`event: completed\ndata: ${JSON.stringify(currentJob.result)}\n\n`);
-            clearInterval(intervalId); res.end(); delete jobs[jobId];
+            clearInterval(intervalId);
+            res.end();
+            delete jobs[jobId];
         } else if (currentJob.status === 'failed') {
-            res.write(`event: error\ndata: ${JSON.stringify({ message: currentJob.error })}\n\n`);
-            clearInterval(intervalId); res.end(); delete jobs[jobId];
+            res.write(`event: error\ndata: ${JSON.stringify({ message: currentJob.error || 'Video processing failed on server.' })}\n\n`);
+            clearInterval(intervalId);
+            res.end();
+            delete jobs[jobId];
         }
     };
 
     const intervalId = setInterval(sendProgress, 500);
+
     req.on('close', () => {
         clearInterval(intervalId);
     });
