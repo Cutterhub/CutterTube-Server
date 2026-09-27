@@ -91,11 +91,11 @@ if (process.env.YOUTUBE_COOKIES) {
     }
 }
 
+// =============================================================
+// دالة أوامر yt-dlp المتوافقة لتخطي خطأ Reload
+// =============================================================
 function getBaseYtDlpArgs(extraArgs = []) {
     const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
-    
-    // دمج خادم التوكنات مع عملاء يوتيوب المعتمدة بفاصلة منقوطة
-    const extractorArgsStr = `youtubepot-bgutilhttp:base_url=${potProviderUrl};youtube:player_client=web_safari,web_embedded,mweb,web`;
 
     const args = [
         '--user-agent', USER_AGENT,
@@ -104,20 +104,23 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        '--extractor-args', extractorArgsStr
+        // استخدام مزود التوكنات الداخلي
+        '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
+        // استخدام عملاء آمنين يتجاوزون خطأ Reload
+        '--extractor-args', 'youtube:player_client=android,ios,web_safari'
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    if (hasCookies) {
+    // عدم إرسال الكوكيز إلا إذا تم تفعيلها صراحة كـ true لتفادي خطأ Reload
+    if (process.env.USE_YOUTUBE_COOKIES === 'true' && hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
     }
 
     return [...args, ...extraArgs];
 }
-
 function spawnYtDlp(args) {
     return spawn('python3', ['-m', 'yt_dlp', ...args]);
 }
