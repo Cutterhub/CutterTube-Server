@@ -12,7 +12,7 @@ const app = express();
 app.use(express.json());
 
 // =============================================================
-// 1. تحديد المنفذ والرابط العام (Railway / Linux)
+// 1. المنفذ والرابط العام (Railway / Linux)
 // =============================================================
 const PORT = process.env.PORT || 4000;
 const PUBLIC_API_URL = process.env.PUBLIC_API_URL || 
@@ -71,7 +71,7 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. مسارات الأدوات وإعداد الكوكيز
+// 5. مسارات الأدوات وإعداد PO Token Provider
 // =============================================================
 const FFMPEG_PATH = process.env.FFMPEG_PATH || '/usr/bin/ffmpeg';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
@@ -92,6 +92,11 @@ if (process.env.YOUTUBE_COOKIES) {
 }
 
 function getBaseYtDlpArgs(extraArgs = []) {
+    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    
+    // دمج خادم التوكنات مع عملاء يوتيوب المعتمدة بفاصلة منقوطة
+    const extractorArgsStr = `youtubepot-bgutilhttp:base_url=${potProviderUrl};youtube:player_client=web_safari,web_embedded,mweb,web`;
+
     const args = [
         '--user-agent', USER_AGENT,
         '--no-warnings',
@@ -99,8 +104,7 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        // عملاء يوتيوب المعتمدة لتخطي خطأ The page needs to be reloaded
-        '--extractor-args', 'youtube:player_client=ios,android,mweb,web_embedded'
+        '--extractor-args', extractorArgsStr
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
@@ -121,19 +125,19 @@ function spawnYtDlp(args) {
 const jobs = {};
 
 // =============================================================
-// 6. تعريف صلاحيات الباقات (العلامة المائية ملغاة للجميع)
+// 6. تعريف صلاحيات الباقات الثلاث (Free, Basic, Pro)
 // =============================================================
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120, // دقيقتان
-        watermark: false, // 👈 تم إلغاء العلامة المائية للوضع المجاني
+        max_duration: 120,
+        watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800, // 30 دقيقة
+        max_duration: 1800,
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -532,11 +536,14 @@ async function handleCreateClip(req, res) {
 
         const totalDuration = endTime - startTime;
         const isGif = format.toLowerCase() === 'gif';
-        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best';
+        
+        // صوت مرن يتقبل أي صيغة صوتية متاحة دون شروط
+        let baseAudio = audioTrackId ? audioTrackId : 'bestaudio/best';
 
+        // محدد جودة ذكي ومرن يمنع Requested format is not available
         let formatSelection = isAudioFormat(format)
-            ? (audioTrackId ? audioTrackId : 'bestaudio[ext=m4a]/bestaudio/best')
-            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
+            ? (audioTrackId ? audioTrackId : 'bestaudio/best')
+            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best[height<=?${targetHeight}]/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -545,7 +552,6 @@ async function handleCreateClip(req, res) {
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
-            '--format-sort', `res:${targetHeight},vcodec:vp9,vcodec:avc,acodec:m4a`,
             '--downloader-args', 'ffmpeg_i:-threads 2',
             '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
@@ -618,7 +624,8 @@ async function handleCreateClip(req, res) {
                 });
             }
 
-            // معالجة الفيديو بدون أي علامة مائية
+            const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
+
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -636,7 +643,11 @@ async function handleCreateClip(req, res) {
                         return; 
                     }
 
-                    const filterComplex = `fps=${fps},scale=${scale}:-1:flags=lanczos[x];[x][1:v]paletteuse`;
+                    let filterComplex = `fps=${fps},scale=${scale}:-1:flags=lanczos`;
+                    if (permissions.watermark) {
+                        filterComplex += `,${watermarkFilter}`;
+                    }
+                    filterComplex += `[x];[x][1:v]paletteuse`;
 
                     const gifArgs = [
                         '-threads', '2',
@@ -670,6 +681,9 @@ async function handleCreateClip(req, res) {
                 let ffmpegArgs = ['-threads', '2', '-i', actualRawPath];
                 let filters = [];
 
+                if (permissions.watermark) {
+                    filters.push(watermarkFilter);
+                }
                 if (subPath) {
                     const escapedSubPath = subPath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
                     filters.push(`subtitles='${escapedSubPath}'`);
