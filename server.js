@@ -270,7 +270,7 @@ async function handleVideoMetadata(req, res) {
     const videoId = req.query.videoId || req.body?.videoId;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
 
-    const videoUrl = rawInput.startsWith('http') ? rawInput : `https://www.youtube.com/watch?v=${rawInput}`;
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
     const ytdlp = spawnYtDlp(ytdlpArgs);
     
@@ -559,8 +559,7 @@ async function handleCreateClip(req, res) {
         }
 
         jobId = crypto.randomBytes(16).toString('hex');
-        const rawInput = req.body.url || req.body.videoId;
-        const videoUrl = rawInput.startsWith('http') ? rawInput : `https://www.youtube.com/watch?v=${rawInput}`;
+        const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
         
         const cleanTitle = sanitizeFilename(title);
         const finalFilename = `(cuttertube.com) ${cleanTitle}.${format}`;
