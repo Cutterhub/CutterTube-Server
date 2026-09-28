@@ -54,8 +54,12 @@ if (!supabaseUrl || !supabaseKey) {
     process.exit(1);
 }
 const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: { persistSession: false },
-    realtime: { createSocket: () => null }
+    auth: {
+        persistSession: false
+    },
+    realtime: {
+        createSocket: () => null
+    }
 });
 
 // =============================================================
@@ -81,9 +85,15 @@ if (process.env.YOUTUBE_COOKIES) {
             cookieData = Buffer.from(cookieData, 'base64').toString('utf8');
         }
         fs.writeFileSync(COOKIES_PATH, cookieData, 'utf8');
-    } catch (err) {}
+        console.log('🍪 Session credentials loaded successfully.');
+    } catch (err) {
+        console.error('❌ Credentials processing error.');
+    }
 }
 
+// =============================================================
+// دالة أوامر yt-dlp المتوافقة لتخطي خطأ Reload
+// =============================================================
 function getBaseYtDlpArgs(extraArgs = []) {
     const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
 
@@ -94,13 +104,14 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
-        '--extractor-args', 'youtube:player_client=web,default'
+        // استخدام مزود GetPOT
+        '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
+    // تمرير الكوكيز دائماً مع GetPOT لتوثيق التوكنات
     if (hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
@@ -121,14 +132,14 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
     free: {
         plan_name: 'Free',
-        max_duration: 120, // دقيقتان
+        max_duration: 120,
         watermark: true,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p'],
         allowed_formats: ['mp4', 'mp3']
     },
     basic: {
         plan_name: 'Basic',
-        max_duration: 1800, // 30 دقيقة
+        max_duration: 1800,
         watermark: false,
         allowed_qualities: ['144p', '240p', '360p', '480p', '720p', '1080p'],
         allowed_formats: ['mp4', 'mp3', 'webm', 'gif']
@@ -166,47 +177,65 @@ function isAudioFormat(format) {
     return ['mp3', 'wav'].includes((format || '').toLowerCase());
 }
 
-function extractTokenData(token) {
+function extractUserIdFromToken(token) {
     try {
         const parts = token.split('.');
         if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-            return {
-                id: payload.sub || payload.id || null,
-                email: payload.email || null
-            };
+            return payload.sub || payload.id || null;
         }
-    } catch (e) {}
-    return { id: null, email: null };
+    } catch (e) {
+        return null;
+    }
+    return null;
+}
+
+function extractUserEmailFromToken(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+            return payload.email || null;
+        }
+    } catch (e) {
+        return null;
+    }
+    return null;
 }
 
 function resolveUserPlan(userRow) {
     if (!userRow) return 'free';
-    const email = (userRow.email || '').trim().toLowerCase();
-    if (userRow.is_admin === true || userRow.role === 'admin' || email === 'admin@cuttertube.com' || email === 'abdela456a@gmail.com') {
-        return 'pro';
-    }
-    if (userRow.is_pro === true) {
-        return 'pro';
-    }
+    if (userRow.is_admin === true || userRow.role === 'admin') return 'pro';
+    if (userRow.is_pro === true) return 'pro';
     const plan = String(userRow.plan || 'free').toLowerCase().trim();
     if (['free', 'basic', 'pro'].includes(plan)) return plan;
     if (userRow.role === 'basic') return 'basic';
     return 'free';
 }
 
+// دالة جلب البروفايل بالـ ID والـ Email من جدول profiles
 async function getUserProfileData(userId, userEmail) {
     if (!userId && !userEmail) return null;
     let profile = null;
 
     if (userId) {
-        const { data } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+        const { data } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .maybeSingle();
         if (data) profile = data;
     }
+
     if (!profile && userEmail) {
-        const { data } = await supabase.from('profiles').select('*').eq('email', userEmail.trim().toLowerCase()).maybeSingle();
+        const { data } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('email', userEmail.trim().toLowerCase())
+            .maybeSingle();
         if (data) profile = data;
     }
+
     return profile;
 }
 
@@ -215,7 +244,9 @@ function sanitizeFilename(name) {
     return name.replace(/[\\/:\*\?"<>\|]/g, '_').replace(/^\.+|\.+$/g, '').trim().replace(/\s+/g, ' ');
 }
 
-// مسار فحص صحة السيرفر
+// =============================================================
+// المسارات العامة (Health & Root)
+// =============================================================
 app.get('/', (req, res) => {
     res.json({ 
         status: 'online', 
@@ -239,7 +270,7 @@ async function handleVideoMetadata(req, res) {
     const videoId = req.query.videoId || req.body?.videoId;
     if (!videoId) return res.status(400).json({ message: 'Video ID is required.' });
 
-    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const videoUrl = rawInput.startsWith('http') ? rawInput : `https://www.youtube.com/watch?v=${rawInput}`;
     const ytdlpArgs = getBaseYtDlpArgs(['--dump-json', videoUrl]);
     const ytdlp = spawnYtDlp(ytdlpArgs);
     
@@ -375,16 +406,14 @@ async function handleUserStatus(req, res) {
             return res.status(401).json({ message: 'Unauthorized' });
         }
         const token = authHeader.split(' ')[1];
-        const tokenData = extractTokenData(token);
+        let userId = extractUserIdFromToken(token);
+        let userEmail = extractUserEmailFromToken(token);
 
-        let userId = tokenData.id;
-        let userEmail = tokenData.email;
-
-        if (!userId) {
+        if (!userId || !userEmail) {
             const { data: { user } } = await supabase.auth.getUser(token);
             if (user) {
-                userId = user.id;
-                userEmail = user.email;
+                userId = userId || user.id;
+                userEmail = userEmail || user.email;
             }
         }
 
@@ -409,18 +438,25 @@ app.get('/api/user-status', handleUserStatus);
 // =============================================================
 // GET /progress/:jobId
 // =============================================================
+// =============================================================
+// مسار شريط التقدم المحمي مع نبضات البقاء حياً (SSE Keep-Alive)
+// =============================================================
 function handleProgress(req, res) {
     const { jobId } = req.params;
     
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // لمنع البروكسي من حجز البيانات
     res.flushHeaders();
 
     if (!jobs[jobId]) {
         res.write(`event: error\ndata: ${JSON.stringify({ message: 'Job not found or already finished.' })}\n\n`);
         return res.end();
     }
+
+    // إرسال نبضة فورية للاتصال
+    res.write(`: ping\n\n`);
 
     const sendProgress = () => {
         const currentJob = jobs[jobId];
@@ -429,17 +465,25 @@ function handleProgress(req, res) {
             res.end();
             return;
         }
+
+        // إرسال نسبة التقدم الحالية
         res.write(`event: progress\ndata: ${JSON.stringify({ progress: currentJob.progress })}\n\n`);
+
         if (currentJob.status === 'completed') {
             res.write(`event: completed\ndata: ${JSON.stringify(currentJob.result)}\n\n`);
-            clearInterval(intervalId); res.end(); delete jobs[jobId];
+            clearInterval(intervalId);
+            res.end();
+            delete jobs[jobId];
         } else if (currentJob.status === 'failed') {
-            res.write(`event: error\ndata: ${JSON.stringify({ message: currentJob.error })}\n\n`);
-            clearInterval(intervalId); res.end(); delete jobs[jobId];
+            res.write(`event: error\ndata: ${JSON.stringify({ message: currentJob.error || 'Video processing failed on server.' })}\n\n`);
+            clearInterval(intervalId);
+            res.end();
+            delete jobs[jobId];
         }
     };
 
     const intervalId = setInterval(sendProgress, 500);
+
     req.on('close', () => {
         clearInterval(intervalId);
     });
@@ -448,38 +492,34 @@ app.get('/progress/:jobId', handleProgress);
 app.get('/api/progress/:jobId', handleProgress);
 
 // =============================================================
-// POST /create-clip (استخراج 4K و 2K السريع والمباشر)
+// POST /create-clip
 // =============================================================
 async function handleCreateClip(req, res) {
     let jobId = null;
     try {
         const authHeader = req.headers.authorization;
         let userId = null;
-        let userEmail = req.body?.email || null;
         let userPlan = 'free';
 
         if (authHeader && authHeader.startsWith('Bearer ')) {
             const token = authHeader.split(' ')[1];
-            const tokenData = extractTokenData(token);
+            userId = extractUserIdFromToken(token);
+            let userEmail = extractUserEmailFromToken(token);
             
-            userId = tokenData.id;
-            if (!userEmail) userEmail = tokenData.email;
-
-            if (!userId) {
+            if (!userId || !userEmail) {
                 try {
                     const { data: { user: authUser } } = await supabase.auth.getUser(token);
                     if (authUser) {
-                        userId = authUser.id;
-                        if (!userEmail) userEmail = authUser.email;
+                        userId = userId || authUser.id;
+                        userEmail = userEmail || authUser.email;
                     }
                 } catch (e) {}
             }
 
-            const userRow = await getUserProfileData(userId, userEmail);
-            userPlan = resolveUserPlan(userRow);
-        } else if (req.body?.userId || req.body?.user_id || req.body?.email) {
-            const userRow = await getUserProfileData(req.body.userId || req.body.user_id, req.body.email);
-            userPlan = resolveUserPlan(userRow);
+            if (userId || userEmail) {
+                const userRow = await getUserProfileData(userId, userEmail);
+                userPlan = resolveUserPlan(userRow);
+            }
         }
 
         const permissions = PLAN_PERMISSIONS[userPlan] || PLAN_PERMISSIONS['free'];
@@ -519,7 +559,8 @@ async function handleCreateClip(req, res) {
         }
 
         jobId = crypto.randomBytes(16).toString('hex');
-        const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        const rawInput = req.body.url || req.body.videoId;
+        const videoUrl = rawInput.startsWith('http') ? rawInput : `https://www.youtube.com/watch?v=${rawInput}`;
         
         const cleanTitle = sanitizeFilename(title);
         const finalFilename = `(cuttertube.com) ${cleanTitle}.${format}`;
@@ -540,12 +581,14 @@ async function handleCreateClip(req, res) {
 
         const totalDuration = endTime - startTime;
         const isGif = format.toLowerCase() === 'gif';
+        
+        // صوت مرن يتقبل أي صيغة صوتية متاحة دون شروط
         let baseAudio = audioTrackId ? audioTrackId : 'bestaudio/best';
 
-        // محدد الجودة المباشر والمطابق للملف القديم (يعيد 4K و 2K بسلاسة)
+        // محدد جودة ذكي ومرن يمنع Requested format is not available
         let formatSelection = isAudioFormat(format)
             ? (audioTrackId ? audioTrackId : 'bestaudio/best')
-            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
+            : `bestvideo[height<=?${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best[height<=?${targetHeight}]/best`;
 
         const rawClipPrefix = `raw_${jobId}`;
         const rawClipPath = path.join(CLIPS_DIR, `${rawClipPrefix}.mp4`);
@@ -554,7 +597,6 @@ async function handleCreateClip(req, res) {
         const ytdlpSectionArgs = getBaseYtDlpArgs([
             videoUrl,
             '--download-sections', `*${startTime}-${endTime}`,
-            '--format-sort', `res:${targetHeight},vcodec:vp9,vcodec:avc,acodec:m4a`,
             '--downloader-args', 'ffmpeg_i:-threads 2',
             '--downloader-args', 'ffmpeg:-threads 2',
             '-f', formatSelection,
@@ -629,7 +671,6 @@ async function handleCreateClip(req, res) {
 
             const watermarkFilter = "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
 
-            // معالجة FFmpeg السريعة
             if (isGif) {
                 const fps = 15, scale = 540, palettePath = path.join(CLIPS_DIR, `palette_${jobId}.png`);
                 const paletteArgs = [
@@ -697,7 +738,6 @@ async function handleCreateClip(req, res) {
                     ffmpegArgs.push('-vf', filters.join(','));
                 }
 
-                // ترميز خفيف وسريع متوافق مع MP4 لكافة الجودات
                 ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22');
 
                 if (mute) {
@@ -752,9 +792,7 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
     });
 
     ffmpegProcess.on('close', (code) => {
-        const isFileReady = (code === 0 || code === null) && fs.existsSync(path.join(CLIPS_DIR, job.tempFile));
-        
-        if (isFileReady) {
+        if (code === 0 && fs.existsSync(path.join(CLIPS_DIR, job.tempFile))) {
             if (onCompleteCallback) onCompleteCallback();
 
             async function logClipToDatabase() {
@@ -790,7 +828,10 @@ function handleFfmpegProcess(ffmpegProcess, jobId, totalDuration, clipMetadata, 
 }
 
 // =============================================================
-// GET /download/:tempFilename/:finalFilename (مهلة تنظيف 5 دقائق)
+// GET /download/:tempFilename/:finalFilename
+// =============================================================
+// =============================================================
+// مسار التحميل المباشر مع مهلة تنظيف ذكية (5 دقائق)
 // =============================================================
 function handleDownload(req, res) {
     try {
@@ -802,6 +843,7 @@ function handleDownload(req, res) {
             return res.status(404).send('File expired or not found. Please create clip again.');
         }
 
+        // إجبار المتصفح على تحميل الملف مباشرة كملف مرفق
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(decodedFinalFilename)}"`);
 
         res.download(filePath, decodedFinalFilename, (err) => {
@@ -809,17 +851,18 @@ function handleDownload(req, res) {
                 console.error("[Download Note]:", err.message);
             }
             
+            // ⏰ حذف الملف المؤقت بأمان بعد 5 دقائق من أول طلب لتحميله
             setTimeout(() => {
                 try {
                     if (fs.existsSync(filePath)) {
                         fs.unlinkSync(filePath);
-                        console.log(`🧹 Temp file ${tempFilename} cleaned up.`);
+                        console.log(`🧹 Temp file ${tempFilename} safely cleaned up after delay.`);
                     }
                 } catch (e) {}
             }, 5 * 60 * 1000);
         });
     } catch (error) {
-        console.error("[Download Error]", error);
+        console.error("[Download Error]:", error.message);
         res.status(500).send("An internal server error occurred.");
     }
 }
