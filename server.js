@@ -7,9 +7,12 @@ const os = require('os');
 const cors = require('cors');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
+const toolsRouter = require('./tools');
+
 
 const app = express();
 app.use(express.json());
+app.use('/', toolsRouter);
 
 // =============================================================
 // 1. المنفذ والرابط العام (Railway / Linux)
