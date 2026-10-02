@@ -7,7 +7,16 @@ const os = require('os');
 const cors = require('cors');
 const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
-const toolsRouter = require('./tools');
+try {
+    const toolsPath = path.join(__dirname, 'tools.js');
+    if (fs.existsSync(toolsPath)) {
+        const toolsRouter = require('./tools');
+        app.use('/', toolsRouter);
+        console.log('🛠️ Tools router loaded successfully.');
+    }
+} catch (toolsErr) {
+    console.warn('⚠️ Tools router note:', toolsErr.message);
+}
 
 
 const app = express();
