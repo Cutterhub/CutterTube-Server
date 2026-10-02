@@ -34,17 +34,33 @@ const allowedOrigins = (
 .filter(Boolean);
 
 app.use(cors({
-    origin(origin, callback) {
-        if (!origin || allowedOrigins.includes(origin) || origin.startsWith('chrome-extension://')) {
+    origin: (origin, callback) => {
+        // السماح بالطلبات بدون Origin أو من إضافات المتصفح
+        if (!origin || origin.startsWith('chrome-extension://')) {
             return callback(null, true);
         }
-        return callback(new Error('Not allowed by CORS'));
+
+        // السماح بنطاق cuttertube (مع www وبدونها) ونطاقات التطوير المحلي
+        const isAllowed = 
+            origin === 'https://cuttertube.com' ||
+            origin === 'https://www.cuttertube.com' ||
+            origin.endsWith('.cuttertube.com') ||
+            origin.includes('localhost') ||
+            origin.includes('127.0.0.1');
+
+        if (isAllowed) {
+            return callback(null, true);
+        }
+
+        // رفض النطاقات الغريبة بأمان دون إسقاط الخادم بخطأ 500
+        return callback(null, false);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-app-client', 'x-requested-with']
 }));
 
+// معالجة كافة طلبات الـ Preflight OPTIONS تلقائياً
 app.options('*', cors());
 
 // =============================================================
