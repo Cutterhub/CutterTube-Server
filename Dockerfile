@@ -30,3 +30,6 @@ ENV PORT=4000
 EXPOSE 4000
 
 CMD ["npm", "start"]
+
+# نسخ server.js وأي ملفات تابعة مثل tools.js والكوكيز إن وجدت
+COPY server.js tools.js* cookies.txt* ./
