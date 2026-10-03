@@ -199,26 +199,12 @@ function getBaseYtDlpArgs(extraArgs = []) {
         'node'
     ];
 
-    /*
-     * BGUTIL اختياري.
-     *
-     * لن يتم استخدام Railway internal URL بشكل افتراضي.
-     * إذا كان لديك BGUTIL فعليًا ضع:
-     *
-     * BGUTIL_POT_PROVIDER_URL=https://...
-     */
-
     if (potProviderUrl) {
-
         args.push(
             '--extractor-args',
             `youtubepot-bgutilhttp:base_url=${potProviderUrl}`
         );
     }
-
-    // =========================================================
-    // Cookies
-    // =========================================================
 
     const localCookieFile =
         path.join(
@@ -231,7 +217,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
         fs.existsSync(localCookieFile);
 
     if (hasCookies) {
-
         const cookieToUse =
             fs.existsSync(COOKIES_PATH)
                 ? COOKIES_PATH
@@ -254,24 +239,17 @@ function getBaseYtDlpArgs(extraArgs = []) {
 // =============================================================
 
 function spawnYtDlp(args) {
+    const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
 
-    console.log(
-        `[yt-dlp] Executing: ${YTDLP_PATH}`
-    );
+    console.log(`[yt-dlp] Executable: ${ytdlpPath}`);
+    console.log(`[yt-dlp] Arguments: ${args.join(' ')}`);
 
-    console.log(
-        `[yt-dlp] Args: ${args.join(' ')}`
-    );
-
-    return spawn(
-        YTDLP_PATH,
-        args,
-        {
-            env: {
-                ...process.env
-            }
-        }
-    );
+    return spawn(ytdlpPath, args, {
+        env: {
+            ...process.env
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
 }
 
 // =============================================================
@@ -287,13 +265,9 @@ const jobs = {};
 const PLAN_PERMISSIONS = {
 
     free: {
-
         plan_name: 'Free',
-
         max_duration: 120,
-
         watermark: true,
-
         allowed_qualities: [
             '144p',
             '240p',
@@ -301,7 +275,6 @@ const PLAN_PERMISSIONS = {
             '480p',
             '720p'
         ],
-
         allowed_formats: [
             'mp4',
             'mp3'
@@ -309,13 +282,9 @@ const PLAN_PERMISSIONS = {
     },
 
     basic: {
-
         plan_name: 'Basic',
-
         max_duration: 1800,
-
         watermark: false,
-
         allowed_qualities: [
             '144p',
             '240p',
@@ -324,7 +293,6 @@ const PLAN_PERMISSIONS = {
             '720p',
             '1080p'
         ],
-
         allowed_formats: [
             'mp4',
             'mp3',
@@ -334,11 +302,8 @@ const PLAN_PERMISSIONS = {
     },
 
     pro: {
-
         plan_name: 'Pro',
-
         watermark: false,
-
         allowed_qualities: [
             '144p',
             '240p',
@@ -351,7 +316,6 @@ const PLAN_PERMISSIONS = {
             '2160p',
             '4k'
         ],
-
         allowed_formats: [
             'mp4',
             'mp3',
@@ -1777,33 +1741,12 @@ async function handleCreateClip(
 
         let formatSelection;
 
-        if (
-            isAudioFormat(format)
-        ) {
-
-            formatSelection =
-                audioTrackId
-                    ? audioTrackId
-                    : 'bestaudio/best';
-
+        if (isAudioFormat(format)) {
+            formatSelection = audioTrackId || 'bestaudio/best';
         } else {
-
-            /*
-             * مهم:
-             *
-             * الصيغة القديمة كانت:
-             *
-             * bestvideo[height<=?${targetHeight}]
-             *
-             * وهذا غير صحيح.
-             *
-             * الصحيح:
-             *
-             * bestvideo[height<=${targetHeight}]
-             */
-
             formatSelection =
-                `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
+                `bestvideo[height<=${targetHeight}]+${baseAudio}/best` +
+                `/bestvideo[height<=${targetHeight}]/best`;
         }
 
         const rawClipPrefix =
@@ -3514,29 +3457,65 @@ app.get(
 );
 
 // =============================================================
-// 28. تشغيل السيرفر
+// 28. دالة التحقق من البرامج عند الإقلاع
+// =============================================================
+
+function checkBinary(binary, args = ['--version']) {
+    return new Promise((resolve) => {
+        const process = spawn(binary, args, {
+            env: { ...process.env },
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        let output = '';
+
+        process.stdout.on('data', data => {
+            output += data.toString();
+        });
+
+        process.stderr.on('data', data => {
+            output += data.toString();
+        });
+
+        process.on('error', error => {
+            console.error(`[Startup] ${binary} ERROR: ${error.message}`);
+            resolve(false);
+        });
+
+        process.on('close', code => {
+            console.log(
+                `[Startup] ${binary}: exit=${code} ${output.trim()}`
+            );
+            resolve(code === 0);
+        });
+    });
+}
+
+// =============================================================
+// 29. تشغيل السيرفر
 // =============================================================
 
 app.listen(
     PORT,
     '0.0.0.0',
-    () => {
+    async () => {
 
         console.log(
-            `✅ CutterTube Server is running on port ${PORT}`
+            `🚀 CutterTube API running on port ${PORT}`
         );
 
         console.log(
-            `🌐 Public API URL: ${PUBLIC_API_URL}`
+            `🌐 Public API: ${PUBLIC_API_URL}`
         );
 
-        console.log(
-            `▶️ yt-dlp path: ${YTDLP_PATH}`
-        );
+        const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
 
-        console.log(
-            `🎬 ffmpeg path: ${FFMPEG_PATH}`
-        );
+        console.log('🔧 Checking processing binaries...');
+
+        await checkBinary(ytdlpPath, ['--version']);
+        await checkBinary(FFMPEG_PATH, ['-version']);
+
+        console.log('✅ Binary checks completed.');
 
         console.log(
             `🔐 BGUTIL enabled: ${
@@ -3549,5 +3528,3 @@ app.listen(
 );
 
 module.exports = app;
-
-//sdsd
