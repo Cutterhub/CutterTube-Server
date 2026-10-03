@@ -1408,10 +1408,6 @@ async function handleCreateClip(
         let userPlan =
             'free';
 
-        // =====================================================
-        // المستخدم
-        // =====================================================
-
         if (
             authHeader &&
             authHeader.startsWith(
@@ -1463,7 +1459,7 @@ async function handleCreateClip(
                     }
 
                 } catch (e) {
-                    // Continue as anonymous/free
+                    // Continue as free
                 }
             }
 
@@ -1496,10 +1492,6 @@ async function handleCreateClip(
                     userRow
                 );
         }
-
-        // =====================================================
-        // صلاحيات الخطة
-        // =====================================================
 
         const permissions =
             PLAN_PERMISSIONS[userPlan] ||
@@ -1650,10 +1642,6 @@ async function handleCreateClip(
                 });
         }
 
-        // =====================================================
-        // Job
-        // =====================================================
-
         jobId =
             crypto
                 .randomBytes(16)
@@ -1708,20 +1696,12 @@ async function handleCreateClip(
                 finalFilename
         };
 
-        // =====================================================
-        // إرجاع jobId فورًا
-        // =====================================================
-
         res.status(202).json({
 
             success: true,
 
             jobId
         });
-
-        // =====================================================
-        // Processing
-        // =====================================================
 
         const totalDuration =
             duration;
@@ -1734,10 +1714,6 @@ async function handleCreateClip(
             audioTrackId
                 ? audioTrackId
                 : 'bestaudio/best';
-
-        // =====================================================
-        // Format Selection
-        // =====================================================
 
         let formatSelection;
 
@@ -1763,10 +1739,6 @@ async function handleCreateClip(
                 CLIPS_DIR,
                 jobs[jobId].tempFile
             );
-
-        // =====================================================
-        // yt-dlp Arguments
-        // =====================================================
 
         const ytdlpSectionArgs =
             getBaseYtDlpArgs([
@@ -1933,19 +1905,11 @@ async function handleCreateClip(
                     return;
                 }
 
-                // =================================================
-                // Processing
-                // =================================================
-
                 jobs[jobId].status =
                     'processing';
 
                 jobs[jobId].progress =
                     50;
-
-                // =================================================
-                // Subtitles
-                // =================================================
 
                 let subPath =
                     null;
@@ -2041,16 +2005,8 @@ async function handleCreateClip(
                     );
                 }
 
-                // =================================================
-                // Watermark
-                // =================================================
-
                 const watermarkFilter =
                     "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
-
-                // =================================================
-                // GIF
-                // =================================================
 
                 if (isGif) {
 
@@ -2203,10 +2159,6 @@ async function handleCreateClip(
                         }
                     );
 
-                // =================================================
-                // Audio
-                // =================================================
-
                 } else if (
                     isAudioFormat(format)
                 ) {
@@ -2281,10 +2233,6 @@ async function handleCreateClip(
                             }
                         }
                     );
-
-                // =================================================
-                // Video
-                // =================================================
 
                 } else {
 
@@ -3462,27 +3410,27 @@ app.get(
 
 function checkBinary(binary, args = ['--version']) {
     return new Promise((resolve) => {
-        const process = spawn(binary, args, {
+        const proc = spawn(binary, args, {
             env: { ...process.env },
             stdio: ['ignore', 'pipe', 'pipe']
         });
 
         let output = '';
 
-        process.stdout.on('data', data => {
+        proc.stdout.on('data', data => {
             output += data.toString();
         });
 
-        process.stderr.on('data', data => {
+        proc.stderr.on('data', data => {
             output += data.toString();
         });
 
-        process.on('error', error => {
+        proc.on('error', error => {
             console.error(`[Startup] ${binary} ERROR: ${error.message}`);
             resolve(false);
         });
 
-        process.on('close', code => {
+        proc.on('close', code => {
             console.log(
                 `[Startup] ${binary}: exit=${code} ${output.trim()}`
             );
