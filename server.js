@@ -1,5 +1,4 @@
 require('dotenv').config();
-
 const express = require('express');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -10,35 +9,25 @@ const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json());
 
 // =============================================================
-// 1. PORT + PUBLIC API URL
+// 1. المنفذ والرابط العام (Railway / Linux)
 // =============================================================
-
 const PORT = process.env.PORT || 4000;
-
-const PUBLIC_API_URL =
-    process.env.PUBLIC_API_URL ||
-    process.env.PUBLIC_BACKEND_URL ||
-    (process.env.RAILWAY_PUBLIC_DOMAIN
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-        : `http://localhost:${PORT}`);
+const PUBLIC_API_URL = process.env.PUBLIC_API_URL ||
+                       process.env.PUBLIC_BACKEND_URL ||
+                       (process.env.RAILWAY_PUBLIC_DOMAIN
+                           ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+                           : `http://localhost:${PORT}`);
 
 // =============================================================
-// 2. CORS
+// 2. إعدادات CORS
 // =============================================================
-
 app.use(cors({
     origin: (origin, callback) => {
-        // Allow server-to-server requests / curl / no origin
-        if (!origin) {
-            return callback(null, true);
-        }
-
-        // CutterTube + Vercel + localhost + browser extensions
         if (
+            !origin ||
             origin.includes('cuttertube.com') ||
             origin.includes('vercel.app') ||
             origin.includes('localhost') ||
@@ -48,18 +37,10 @@ app.use(cors({
             return callback(null, true);
         }
 
-        // Keep compatibility with existing deployment
         return callback(null, true);
     },
-
     credentials: true,
-
-    methods: [
-        'GET',
-        'POST',
-        'OPTIONS'
-    ],
-
+    methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type',
         'Authorization',
@@ -71,17 +52,15 @@ app.use(cors({
 app.options('*', cors());
 
 // =============================================================
-// 3. SUPABASE
+// 3. التحقق من متغيرات Supabase
 // =============================================================
-
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
     console.error(
-        '❌ CRITICAL ERROR: Supabase URL or Service Key is missing.'
+        "❌ CRITICAL ERROR: Supabase URL or Service Key is missing in .env file."
     );
-
     process.exit(1);
 }
 
@@ -92,7 +71,6 @@ const supabase = createClient(
         auth: {
             persistSession: false
         },
-
         realtime: {
             createSocket: () => null
         }
@@ -100,9 +78,8 @@ const supabase = createClient(
 );
 
 // =============================================================
-// 4. CLIPS DIRECTORY
+// 4. مجلد المقاطع المؤقتة
 // =============================================================
-
 const CLIPS_DIR =
     process.env.CLIPS_DIR ||
     path.join(__dirname, 'clips');
@@ -114,54 +91,33 @@ if (!fs.existsSync(CLIPS_DIR)) {
 }
 
 // =============================================================
-// 5. FFMPEG / YOUTUBE CONFIG
+// 5. إعدادات FFmpeg / yt-dlp / Cookies
 // =============================================================
-
 const FFMPEG_PATH =
     process.env.FFMPEG_PATH ||
     '/usr/bin/ffmpeg';
 
 const USER_AGENT =
-    process.env.YOUTUBE_USER_AGENT ||
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/121.0.0.0 Safari/537.36';
 
 const COOKIES_PATH =
     path.join(os.tmpdir(), 'youtube_cookies.txt');
-
-// =============================================================
-// 6. LOAD YOUTUBE COOKIES
-// =============================================================
 
 if (process.env.YOUTUBE_COOKIES) {
     try {
         let cookieData =
             process.env.YOUTUBE_COOKIES.trim();
 
-        /*
-         * Support:
-         * - normal Netscape cookie text
-         * - base64 encoded cookie text
-         */
-
         if (
             !cookieData.includes('\t') &&
             !cookieData.includes('\n')
         ) {
-            try {
-                const decoded =
-                    Buffer
-                        .from(cookieData, 'base64')
-                        .toString('utf8');
-
-                if (
-                    decoded.includes('\t') ||
-                    decoded.includes('\n')
-                ) {
-                    cookieData = decoded;
-                }
-            } catch (e) {
-                // Keep original value
-            }
+            cookieData =
+                Buffer
+                    .from(cookieData, 'base64')
+                    .toString('utf8');
         }
 
         fs.writeFileSync(
@@ -171,45 +127,21 @@ if (process.env.YOUTUBE_COOKIES) {
         );
 
         console.log(
-            '🍪 YouTube cookies loaded successfully.'
+            '🍪 Session credentials loaded successfully.'
         );
-
     } catch (err) {
-
         console.error(
-            '❌ YouTube cookies processing error:',
-            err.message
+            '❌ Credentials processing error.'
         );
     }
 }
 
 // =============================================================
-// 7. YT-DLP ARGUMENTS
+// yt-dlp base arguments
 // =============================================================
-
 function getBaseYtDlpArgs(extraArgs = []) {
-
-    /*
-     * IMPORTANT:
-     *
-     * Previously the code ALWAYS used:
-     *
-     * http://bgutil-ytdlp-pot-provider.railway.internal:4416
-     *
-     * If that service doesn't exist, yt-dlp can fail.
-     *
-     * Now BGUTIL is OPTIONAL.
-     *
-     * If BGUTIL_POT_PROVIDER_URL exists:
-     *     use it.
-     *
-     * If it doesn't:
-     *     don't send the extractor argument.
-     */
-
     const potProviderUrl =
-        process.env.BGUTIL_POT_PROVIDER_URL?.trim() ||
-        null;
+        (process.env.BGUTIL_POT_PROVIDER_URL || '').trim();
 
     const args = [
         '--user-agent',
@@ -227,28 +159,13 @@ function getBaseYtDlpArgs(extraArgs = []) {
         'node'
     ];
 
-    // Optional BGUTIL / PO Token provider
+    // PO Token provider اختياري
     if (potProviderUrl) {
-
         args.push(
             '--extractor-args',
             `youtubepot-bgutilhttp:base_url=${potProviderUrl}`
         );
-
-        console.log(
-            `🔐 BGUTIL PO Token provider enabled: ${potProviderUrl}`
-        );
-
-    } else {
-
-        console.log(
-            'ℹ️ BGUTIL PO Token provider disabled.'
-        );
     }
-
-    // =========================================================
-    // COOKIES
-    // =========================================================
 
     const localCookieFile =
         path.join(__dirname, 'cookies.txt');
@@ -258,7 +175,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
         fs.existsSync(localCookieFile);
 
     if (hasCookies) {
-
         const cookieToUse =
             fs.existsSync(COOKIES_PATH)
                 ? COOKIES_PATH
@@ -267,10 +183,6 @@ function getBaseYtDlpArgs(extraArgs = []) {
         args.push(
             '--cookies',
             cookieToUse
-        );
-
-        console.log(
-            `🍪 yt-dlp cookies enabled: ${cookieToUse}`
         );
     }
 
@@ -281,46 +193,29 @@ function getBaseYtDlpArgs(extraArgs = []) {
 }
 
 // =============================================================
-// 8. SPAWN YT-DLP
+// تشغيل yt-dlp
 // =============================================================
-
 function spawnYtDlp(args) {
-
     return spawn(
         'python3',
         [
             '-m',
             'yt_dlp',
             ...args
-        ],
-        {
-            env: {
-                ...process.env
-            }
-        }
+        ]
     );
 }
-
-// =============================================================
-// 9. JOB STORAGE
-// =============================================================
 
 const jobs = {};
 
 // =============================================================
-// 10. PLAN PERMISSIONS
+// 6. صلاحيات الباقات
 // =============================================================
-
 const PLAN_PERMISSIONS = {
-
     free: {
-
         plan_name: 'Free',
-
         max_duration: 120,
-
         watermark: true,
-
         allowed_qualities: [
             '144p',
             '240p',
@@ -328,7 +223,6 @@ const PLAN_PERMISSIONS = {
             '480p',
             '720p'
         ],
-
         allowed_formats: [
             'mp4',
             'mp3'
@@ -336,13 +230,9 @@ const PLAN_PERMISSIONS = {
     },
 
     basic: {
-
         plan_name: 'Basic',
-
         max_duration: 1800,
-
         watermark: false,
-
         allowed_qualities: [
             '144p',
             '240p',
@@ -351,7 +241,6 @@ const PLAN_PERMISSIONS = {
             '720p',
             '1080p'
         ],
-
         allowed_formats: [
             'mp4',
             'mp3',
@@ -361,11 +250,8 @@ const PLAN_PERMISSIONS = {
     },
 
     pro: {
-
         plan_name: 'Pro',
-
         watermark: false,
-
         allowed_qualities: [
             '144p',
             '240p',
@@ -378,7 +264,6 @@ const PLAN_PERMISSIONS = {
             '2160p',
             '4k'
         ],
-
         allowed_formats: [
             'mp4',
             'mp3',
@@ -393,14 +278,12 @@ const PLAN_PERMISSIONS = {
 };
 
 // =============================================================
-// 11. PRO MAX DURATION
+// مدة Pro
 // =============================================================
-
 function getMaxDurationForPro(
     qualityKey,
     format
 ) {
-
     if (format === 'mp3') {
         return 2700;
     }
@@ -428,11 +311,9 @@ function getMaxDurationForPro(
 }
 
 // =============================================================
-// 12. PARSE TARGET HEIGHT
+// تحويل الجودة إلى ارتفاع
 // =============================================================
-
 function parseTargetHeight(qualityStr) {
-
     const q =
         (qualityStr || '')
             .toLowerCase()
@@ -500,11 +381,9 @@ function parseTargetHeight(qualityStr) {
 }
 
 // =============================================================
-// 13. AUDIO FORMAT
+// Audio format
 // =============================================================
-
 function isAudioFormat(format) {
-
     return [
         'mp3',
         'wav'
@@ -514,18 +393,14 @@ function isAudioFormat(format) {
 }
 
 // =============================================================
-// 14. JWT DATA
+// استخراج بيانات Token
 // =============================================================
-
 function extractTokenData(token) {
-
     try {
-
         const parts =
             token.split('.');
 
         if (parts.length === 3) {
-
             const payload =
                 JSON.parse(
                     Buffer
@@ -537,7 +412,6 @@ function extractTokenData(token) {
                 );
 
             return {
-
                 id:
                     payload.sub ||
                     payload.id ||
@@ -548,10 +422,7 @@ function extractTokenData(token) {
                     null
             };
         }
-
-    } catch (e) {
-        // Ignore malformed token
-    }
+    } catch (e) {}
 
     return {
         id: null,
@@ -560,11 +431,9 @@ function extractTokenData(token) {
 }
 
 // =============================================================
-// 15. RESOLVE PLAN
+// تحديد الباقة
 // =============================================================
-
 function resolveUserPlan(userRow) {
-
     if (!userRow) {
         return 'free';
     }
@@ -580,7 +449,6 @@ function resolveUserPlan(userRow) {
         email === 'admin@cuttertube.com' ||
         email === 'abdela456a@gmail.com'
     ) {
-
         return 'pro';
     }
 
@@ -592,8 +460,8 @@ function resolveUserPlan(userRow) {
         String(
             userRow.plan || 'free'
         )
-            .toLowerCase()
-            .trim();
+        .toLowerCase()
+        .trim();
 
     if (
         [
@@ -613,14 +481,12 @@ function resolveUserPlan(userRow) {
 }
 
 // =============================================================
-// 16. GET USER PROFILE
+// جلب بيانات المستخدم
 // =============================================================
-
 async function getUserProfileData(
     userId,
     userEmail
 ) {
-
     if (!userId && !userEmail) {
         return null;
     }
@@ -628,14 +494,12 @@ async function getUserProfileData(
     let profile = null;
 
     if (userId) {
-
-        const {
-            data
-        } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .maybeSingle();
+        const { data } =
+            await supabase
+                .from('profiles')
+                .select('*')
+                .eq('id', userId)
+                .maybeSingle();
 
         if (data) {
             profile = data;
@@ -643,19 +507,17 @@ async function getUserProfileData(
     }
 
     if (!profile && userEmail) {
-
-        const {
-            data
-        } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq(
-                'email',
-                userEmail
-                    .trim()
-                    .toLowerCase()
-            )
-            .maybeSingle();
+        const { data } =
+            await supabase
+                .from('profiles')
+                .select('*')
+                .eq(
+                    'email',
+                    userEmail
+                        .trim()
+                        .toLowerCase()
+                )
+                .maybeSingle();
 
         if (data) {
             profile = data;
@@ -666,11 +528,9 @@ async function getUserProfileData(
 }
 
 // =============================================================
-// 17. SANITIZE FILENAME
+// تنظيف اسم الملف
 // =============================================================
-
 function sanitizeFilename(name) {
-
     if (!name) {
         return 'clip';
     }
@@ -692,19 +552,17 @@ function sanitizeFilename(name) {
 }
 
 // =============================================================
-// 18. HEALTH / ROOT
+// Root
 // =============================================================
-
 app.get('/', (req, res) => {
-
     res.json({
-
         status: 'online',
 
         service:
             'CutterTube Processing API',
 
-        version: '1.1.0',
+        version:
+            '1.0.0',
 
         cookies_loaded:
             fs.existsSync(COOKIES_PATH) ||
@@ -715,22 +573,18 @@ app.get('/', (req, res) => {
                 )
             ),
 
-        bgutil_enabled:
-            Boolean(
-                process.env
-                    .BGUTIL_POT_PROVIDER_URL
-            ),
-
         timestamp:
             new Date().toISOString()
     });
 });
 
+// =============================================================
+// Health
+// =============================================================
 const handleHealth = (
     req,
     res
 ) => {
-
     res.status(200).json({
         status: 'ok',
         service: 'cuttertube-server'
@@ -748,20 +602,17 @@ app.get(
 );
 
 // =============================================================
-// 19. VIDEO METADATA
+// GET /video-metadata
 // =============================================================
-
 async function handleVideoMetadata(
     req,
     res
 ) {
-
     const videoId =
         req.query.videoId ||
         req.body?.videoId;
 
     if (!videoId) {
-
         return res
             .status(400)
             .json({
@@ -779,15 +630,6 @@ async function handleVideoMetadata(
             videoUrl
         ]);
 
-    console.log(
-        `🔍 [Metadata] Fetching: ${videoUrl}`
-    );
-
-    console.log(
-        `🔧 [Metadata] yt-dlp args:`,
-        ytdlpArgs
-    );
-
     const ytdlp =
         spawnYtDlp(ytdlpArgs);
 
@@ -796,104 +638,46 @@ async function handleVideoMetadata(
 
     ytdlp.stdout.on(
         'data',
-        (data) => {
+        data => {
             output += data.toString();
         }
     );
 
     ytdlp.stderr.on(
         'data',
-        (data) => {
-
-            const text =
-                data.toString();
-
-            errorOutput += text;
-
-            console.error(
-                `[Metadata yt-dlp] ${text.trim()}`
-            );
-        }
-    );
-
-    ytdlp.on(
-        'error',
-        (err) => {
-
-            console.error(
-                '[Metadata spawn error]',
-                err
-            );
-
-            if (!res.headersSent) {
-
-                res.status(500).json({
-
-                    message:
-                        'Failed to start yt-dlp.',
-
-                    details:
-                        err.message
-                });
-            }
+        data => {
+            errorOutput += data.toString();
         }
     );
 
     ytdlp.on(
         'close',
-        (code) => {
-
+        code => {
             if (code !== 0) {
-
-                const details =
-                    errorOutput
-                        .split('\n')
-                        .filter(Boolean)
-                        .slice(-8)
-                        .join(' ');
-
                 console.error(
-                    `[Metadata Error] code=${code}`,
-                    details
+                    `[Metadata Error] (code ${code}): ${errorOutput}`
                 );
 
                 return res
                     .status(500)
                     .json({
-
                         message:
                             'Failed to fetch video details.',
 
                         details:
-                            details ||
-                            `yt-dlp exited with code ${code}`,
-
-                        videoId
-                    });
-            }
-
-            if (!output.trim()) {
-
-                return res
-                    .status(500)
-                    .json({
-
-                        message:
-                            'yt-dlp returned empty metadata.',
-
-                        details:
                             errorOutput
-                                .split('\n')
-                                .filter(Boolean)
-                                .slice(-5)
-                                .join(' '),
+                                ? errorOutput
+                                    .split('\n')
+                                    .filter(Boolean)
+                                    .slice(-8)
+                                    .join(' ')
+                                : 'Unknown error',
 
                         videoId
                     });
             }
 
             try {
-
                 const info =
                     JSON.parse(output);
 
@@ -917,10 +701,8 @@ async function handleVideoMetadata(
                         info.formats
                     )
                 ) {
-
                     info.formats.forEach(
-                        (f) => {
-
+                        f => {
                             const hasValidVideo =
                                 f.vcodec &&
                                 f.vcodec !== 'none' &&
@@ -933,7 +715,6 @@ async function handleVideoMetadata(
                                 f.height &&
                                 typeof f.height === 'number'
                             ) {
-
                                 detectedHeights.add(
                                     f.height
                                 );
@@ -944,20 +725,17 @@ async function handleVideoMetadata(
 
                 const availableQualities =
                     standardHeights
-                        .filter((h) => {
-
+                        .filter(h => {
                             for (
                                 const detected
                                 of detectedHeights
                             ) {
-
                                 if (
                                     detected === h ||
                                     Math.abs(
                                         detected - h
                                     ) <= 10
                                 ) {
-
                                     return true;
                                 }
                             }
@@ -965,7 +743,7 @@ async function handleVideoMetadata(
                             return false;
                         })
                         .map(
-                            (h) =>
+                            h =>
                                 h === 2160
                                     ? '4k'
                                     : h === 1440
@@ -973,18 +751,12 @@ async function handleVideoMetadata(
                                         : `${h}p`
                         );
 
-                // =================================================
-                // AUDIO TRACKS
-                // =================================================
-
                 const audioTracks = [];
                 const languageMap = {};
 
                 if (info.formats) {
-
                     info.formats.forEach(
-                        (f) => {
-
+                        f => {
                             const hasAudio =
                                 f.acodec &&
                                 f.acodec !== 'none';
@@ -997,7 +769,6 @@ async function handleVideoMetadata(
                                 hasAudio &&
                                 hasNoVideo
                             ) {
-
                                 const lang =
                                     f.language ||
                                     f.lang ||
@@ -1005,7 +776,6 @@ async function handleVideoMetadata(
                                     null;
 
                                 if (lang) {
-
                                     const name =
                                         f.language_preference ||
                                         f.language_note ||
@@ -1020,9 +790,7 @@ async function handleVideoMetadata(
                                         (f.tbr || 0) >
                                         (languageMap[key].tbr || 0)
                                     ) {
-
                                         languageMap[key] = {
-
                                             id:
                                                 f.format_id,
 
@@ -1048,10 +816,8 @@ async function handleVideoMetadata(
                         info.audio_tracks
                     )
                 ) {
-
                     info.audio_tracks.forEach(
-                        (track) => {
-
+                        track => {
                             const lang =
                                 track.id ||
                                 track.language ||
@@ -1068,9 +834,7 @@ async function handleVideoMetadata(
                             if (
                                 !languageMap[key]
                             ) {
-
                                 languageMap[key] = {
-
                                     id:
                                         track.id ||
                                         track.format_id,
@@ -1091,33 +855,22 @@ async function handleVideoMetadata(
                 for (
                     const key in languageMap
                 ) {
-
                     audioTracks.push(
                         languageMap[key]
                     );
                 }
 
-                // =================================================
-                // SUBTITLES
-                // =================================================
-
                 const subtitles = [];
 
                 if (info.subtitles) {
-
                     for (
-                        const lang
-                        in info.subtitles
+                        const lang in info.subtitles
                     ) {
-
                         subtitles.push({
-
                             id: lang,
 
                             name:
-                                info
-                                    .subtitles[lang][0]
-                                    ?.name ||
+                                info.subtitles[lang][0]?.name ||
                                 lang,
 
                             is_auto: false
@@ -1128,58 +881,43 @@ async function handleVideoMetadata(
                 if (
                     info.automatic_captions
                 ) {
-
                     for (
-                        const lang
-                        in info.automatic_captions
+                        const lang in info.automatic_captions
                     ) {
-
                         subtitles.push({
-
                             id: lang,
 
                             name:
                                 (
-                                    info
-                                        .automatic_captions[lang][0]
-                                        ?.name ||
+                                    info.automatic_captions[lang][0]?.name ||
                                     lang
-                                ) +
-                                ' (auto)',
+                                ) + ' (auto)',
 
                             is_auto: true
                         });
                     }
                 }
 
-                // =================================================
-                // RESPONSE
-                // =================================================
-
                 res.json({
-
                     availableQualities,
-
                     audioTracks,
-
                     subtitles
                 });
 
             } catch (e) {
-
                 console.error(
-                    '[Metadata Parse Error]',
-                    e
+                    `[Metadata Parse Error]: ${e.message}`
                 );
 
-                res.status(500).json({
+                res
+                    .status(500)
+                    .json({
+                        message:
+                            'Failed to process video metadata.',
 
-                    message:
-                        'Failed to process video metadata.',
-
-                    details:
-                        e.message
-                });
+                        details:
+                            e.message
+                    });
             }
         }
     );
@@ -1206,16 +944,13 @@ app.post(
 );
 
 // =============================================================
-// 20. USER STATUS
+// GET /user-status
 // =============================================================
-
 async function handleUserStatus(
     req,
     res
 ) {
-
     try {
-
         const authHeader =
             req.headers.authorization;
 
@@ -1225,7 +960,6 @@ async function handleUserStatus(
                 'Bearer '
             )
         ) {
-
             return res
                 .status(401)
                 .json({
@@ -1247,7 +981,6 @@ async function handleUserStatus(
             tokenData.email;
 
         if (!userId) {
-
             const {
                 data: {
                     user
@@ -1258,7 +991,6 @@ async function handleUserStatus(
                 );
 
             if (user) {
-
                 userId = user.id;
                 userEmail = user.email;
             }
@@ -1276,7 +1008,6 @@ async function handleUserStatus(
             );
 
         res.json({
-
             plan,
 
             subscription:
@@ -1291,16 +1022,17 @@ async function handleUserStatus(
         });
 
     } catch (error) {
-
         console.error(
-            '[/user-status Error]',
+            "[/user-status Error]:",
             error.message
         );
 
-        res.status(500).json({
-            message:
-                'A server error occurred.'
-        });
+        res
+            .status(500)
+            .json({
+                message:
+                    "A server error occurred."
+            });
     }
 }
 
@@ -1315,31 +1047,19 @@ app.get(
 );
 
 // =============================================================
-// 21. SSE PROGRESS
+// GET /progress/:jobId
+// SSE Stream
 // =============================================================
-
 function handleProgress(
     req,
     res
 ) {
-
-    const {
-        jobId
-    } = req.params;
-
-    console.log(
-        `📡 [SSE] Connection opened: ${jobId}`
-    );
-
-    // =========================================================
-    // HEADERS
-    // =========================================================
-
-    res.status(200);
+    const { jobId } =
+        req.params;
 
     res.setHeader(
         'Content-Type',
-        'text/event-stream; charset=utf-8'
+        'text/event-stream'
     );
 
     res.setHeader(
@@ -1369,15 +1089,16 @@ function handleProgress(
 
     res.flushHeaders();
 
-    // =========================================================
-    // JOB NOT FOUND
-    // =========================================================
+    if (
+        typeof req.socket?.setTimeout ===
+        'function'
+    ) {
+        req.socket.setTimeout(0);
+    }
 
     if (!jobs[jobId]) {
-
         res.write(
-            `event: error\n` +
-            `data: ${JSON.stringify({
+            `event: error\ndata: ${JSON.stringify({
                 message:
                     'Job not found or already finished.'
             })}\n\n`
@@ -1386,64 +1107,44 @@ function handleProgress(
         return res.end();
     }
 
-    // =========================================================
-    // INITIAL CONNECTION EVENT
-    // =========================================================
+    res.write(
+        `: connected\n\n`
+    );
 
     res.write(
-        `event: connected\n` +
-        `data: ${JSON.stringify({
-            jobId
+        `event: progress\ndata: ${JSON.stringify({
+            progress:
+                jobs[jobId].progress || 0
         })}\n\n`
     );
 
-    res.write(
-        `: ping\n\n`
-    );
-
-    // =========================================================
-    // SEND PROGRESS
-    // =========================================================
-
     const sendProgress = () => {
-
         const currentJob =
             jobs[jobId];
 
         if (!currentJob) {
-
             clearInterval(
                 intervalId
             );
 
-            if (!res.writableEnded) {
-                res.end();
-            }
+            res.end();
 
             return;
         }
 
-        // Progress
         res.write(
-            `event: progress\n` +
-            `data: ${JSON.stringify({
+            `event: progress\ndata: ${JSON.stringify({
                 progress:
-                    currentJob.progress || 0
+                    currentJob.progress
             })}\n\n`
         );
-
-        // =====================================================
-        // COMPLETED
-        // =====================================================
 
         if (
             currentJob.status ===
             'completed'
         ) {
-
             res.write(
-                `event: completed\n` +
-                `data: ${JSON.stringify(
+                `event: completed\ndata: ${JSON.stringify(
                     currentJob.result
                 )}\n\n`
             );
@@ -1452,27 +1153,16 @@ function handleProgress(
                 intervalId
             );
 
-            if (!res.writableEnded) {
-                res.end();
-            }
+            res.end();
 
             delete jobs[jobId];
 
-            return;
-        }
-
-        // =====================================================
-        // FAILED
-        // =====================================================
-
-        if (
+        } else if (
             currentJob.status ===
             'failed'
         ) {
-
             res.write(
-                `event: error\n` +
-                `data: ${JSON.stringify({
+                `event: error\ndata: ${JSON.stringify({
                     message:
                         currentJob.error ||
                         'Video processing failed.'
@@ -1483,68 +1173,23 @@ function handleProgress(
                 intervalId
             );
 
-            if (!res.writableEnded) {
-                res.end();
-            }
+            res.end();
 
             delete jobs[jobId];
-
-            return;
         }
     };
 
-    // Send immediately
-    sendProgress();
-
-    // Then every 500ms
     const intervalId =
         setInterval(
             sendProgress,
             500
         );
 
-    // =========================================================
-    // KEEP ALIVE
-    // =========================================================
-
-    const pingInterval =
-        setInterval(() => {
-
-            if (
-                res.writableEnded
-            ) {
-
-                clearInterval(
-                    pingInterval
-                );
-
-                return;
-            }
-
-            res.write(
-                `: ping\n\n`
-            );
-
-        }, 15000);
-
-    // =========================================================
-    // CLIENT CLOSED
-    // =========================================================
-
     req.on(
         'close',
         () => {
-
-            console.log(
-                `📡 [SSE] Connection closed: ${jobId}`
-            );
-
             clearInterval(
                 intervalId
-            );
-
-            clearInterval(
-                pingInterval
             );
         }
     );
@@ -1561,30 +1206,21 @@ app.get(
 );
 
 // =============================================================
-// 22. CREATE CLIP
+// POST /create-clip
 // =============================================================
-
 async function handleCreateClip(
     req,
     res
 ) {
-
     let jobId = null;
 
     try {
-
-        // =====================================================
-        // USER
-        // =====================================================
-
         const authHeader =
             req.headers.authorization;
 
         let userId = null;
-
         let userEmail =
-            req.body?.email ||
-            null;
+            req.body?.email || null;
 
         let userPlan = 'free';
 
@@ -1594,7 +1230,6 @@ async function handleCreateClip(
                 'Bearer '
             )
         ) {
-
             const token =
                 authHeader.split(' ')[1];
 
@@ -1610,13 +1245,10 @@ async function handleCreateClip(
             }
 
             if (!userId) {
-
                 try {
-
                     const {
                         data: {
-                            user:
-                                authUser
+                            user: authUser
                         }
                     } =
                         await supabase.auth.getUser(
@@ -1624,7 +1256,6 @@ async function handleCreateClip(
                         );
 
                     if (authUser) {
-
                         userId =
                             authUser.id;
 
@@ -1633,13 +1264,7 @@ async function handleCreateClip(
                                 authUser.email;
                         }
                     }
-
-                } catch (e) {
-                    console.error(
-                        'Supabase token validation warning:',
-                        e.message
-                    );
-                }
+                } catch (e) {}
             }
 
             const userRow =
@@ -1658,7 +1283,6 @@ async function handleCreateClip(
             req.body?.user_id ||
             req.body?.email
         ) {
-
             const userRow =
                 await getUserProfileData(
                     req.body.userId ||
@@ -1671,10 +1295,6 @@ async function handleCreateClip(
                     userRow
                 );
         }
-
-        // =====================================================
-        // PERMISSIONS
-        // =====================================================
 
         const permissions =
             PLAN_PERMISSIONS[userPlan] ||
@@ -1692,34 +1312,8 @@ async function handleCreateClip(
             subtitleTrackId
         } = req.body;
 
-        if (!videoId) {
-
-            return res.status(400).json({
-                message:
-                    'Video ID is required.'
-            });
-        }
-
-        const start =
-            Number(startTime);
-
-        const end =
-            Number(endTime);
-
-        if (
-            !Number.isFinite(start) ||
-            !Number.isFinite(end) ||
-            end <= start
-        ) {
-
-            return res.status(400).json({
-                message:
-                    'Invalid clip start/end time.'
-            });
-        }
-
         const duration =
-            end - start;
+            endTime - startTime;
 
         const targetHeight =
             parseTargetHeight(
@@ -1733,20 +1327,16 @@ async function handleCreateClip(
                     ? '2k'
                     : `${targetHeight}p`;
 
-        // =====================================================
-        // MAX DURATION
-        // =====================================================
-
         let maxAllowedDuration =
             permissions.max_duration;
 
-        if (userPlan === 'pro') {
-
+        if (
+            userPlan === 'pro'
+        ) {
             maxAllowedDuration =
                 getMaxDurationForPro(
                     qualityKey,
-                    String(format)
-                        .toLowerCase()
+                    format.toLowerCase()
                 );
         }
 
@@ -1754,40 +1344,32 @@ async function handleCreateClip(
             duration >
             maxAllowedDuration + 0.1
         ) {
-
             const maxMins =
                 Math.round(
-                    maxAllowedDuration /
-                    60
+                    maxAllowedDuration / 60
                 );
 
-            return res.status(403).json({
-
-                message:
-                    `Clip duration (${duration.toFixed(1)}s) exceeds your ${permissions.plan_name} plan limit (${maxMins} min) for ${quality}.`
-            });
+            return res
+                .status(403)
+                .json({
+                    message:
+                        `Clip duration (${duration.toFixed(1)}s) exceeds your ${permissions.plan_name} plan limit (${maxMins} min) for ${quality}.`
+                });
         }
-
-        // =====================================================
-        // QUALITY
-        // =====================================================
 
         const isQualityAllowed =
             permissions.allowed_qualities.includes(
                 qualityKey
             ) ||
-
             permissions.allowed_qualities.includes(
                 `${targetHeight}p`
             ) ||
-
             (
                 permissions.allowed_qualities.includes(
                     '4k'
                 ) &&
                 targetHeight >= 2160
             ) ||
-
             (
                 permissions.allowed_qualities.includes(
                     '2k'
@@ -1800,34 +1382,26 @@ async function handleCreateClip(
             format !== 'gif' &&
             !isQualityAllowed
         ) {
-
-            return res.status(403).json({
-
-                message:
-                    `The selected quality (${quality}) is not available on the ${permissions.plan_name} plan. Please upgrade to access higher resolutions.`
-            });
+            return res
+                .status(403)
+                .json({
+                    message:
+                        `The selected quality (${quality}) is not available on the ${permissions.plan_name} plan. Please upgrade to access higher resolutions.`
+                });
         }
-
-        // =====================================================
-        // FORMAT
-        // =====================================================
 
         if (
             !permissions.allowed_formats.includes(
-                String(format).toLowerCase()
+                format.toLowerCase()
             )
         ) {
-
-            return res.status(403).json({
-
-                message:
-                    `The selected format (${format}) is not available on the ${permissions.plan_name} plan.`
-            });
+            return res
+                .status(403)
+                .json({
+                    message:
+                        `The selected format (${format}) is not available on the ${permissions.plan_name} plan.`
+                });
         }
-
-        // =====================================================
-        // JOB
-        // =====================================================
 
         jobId =
             crypto
@@ -1844,128 +1418,51 @@ async function handleCreateClip(
             `(cuttertube.com) ${cleanTitle}.${format}`;
 
         const clipMetadata = {
-
             userId,
-
-            name:
-                title,
-
+            name: title,
             videoUrl,
-
-            startTime:
-                start,
-
-            endTime:
-                end,
-
+            startTime,
+            endTime,
             quality,
-
             format,
-
-            plan:
-                userPlan
+            plan: userPlan
         };
 
         jobs[jobId] = {
-
-            status:
-                'starting',
-
-            progress:
-                0,
-
+            status: 'starting',
+            progress: 0,
             tempFile:
                 `${jobId}.${format}`,
-
             finalFile:
                 finalFilename
         };
 
-        // =====================================================
-        // IMPORTANT:
-        // Return 202 BEFORE processing
-        // =====================================================
-
         res.status(202).json({
-
             success: true,
-
             jobId
         });
 
-        // =====================================================
-        // PROCESSING
-        // =====================================================
-
         const totalDuration =
-            duration;
+            endTime - startTime;
 
         const isGif =
-            String(format)
-                .toLowerCase() ===
+            format.toLowerCase() ===
             'gif';
 
-        const normalizedFormat =
-            String(format)
-                .toLowerCase();
+        const baseAudio =
+            audioTrackId
+                ? audioTrackId
+                : 'bestaudio/best';
 
-        let baseAudio =
-            audioTrackId ||
-            'bestaudio/best';
-
-        // =====================================================
-        // FORMAT SELECTION
-        // =====================================================
-
-        let formatSelection;
-
-        if (
-            isAudioFormat(
-                normalizedFormat
-            )
-        ) {
-
-            formatSelection =
-                audioTrackId ||
-                'bestaudio/best';
-
-        } else {
-
-            /*
-             * FIXED:
-             *
-             * OLD:
-             *
-             * bestvideo[height<=?1080]
-             *
-             * WRONG
-             *
-             * NEW:
-             *
-             * bestvideo[height<=1080]
-             *
-             * CORRECT
-             */
-
-            formatSelection =
-                `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
-        }
-
-        console.log(
-            `🎬 [Job ${jobId}] Quality: ${quality}`
-        );
-
-        console.log(
-            `🎬 [Job ${jobId}] Target height: ${targetHeight}`
-        );
-
-        console.log(
-            `🎬 [Job ${jobId}] Format selector: ${formatSelection}`
-        );
-
-        // =====================================================
-        // FILES
-        // =====================================================
+        // محدد الجودة
+        let formatSelection =
+            isAudioFormat(format)
+                ? (
+                    audioTrackId
+                        ? audioTrackId
+                        : 'bestaudio/best'
+                )
+                : `bestvideo[height<=${targetHeight}]+${baseAudio}/bestvideo+${baseAudio}/best`;
 
         const rawClipPrefix =
             `raw_${jobId}`;
@@ -1982,27 +1479,15 @@ async function handleCreateClip(
                 jobs[jobId].tempFile
             );
 
-        // =====================================================
-        // YT-DLP SECTION
-        // =====================================================
-
         const ytdlpSectionArgs =
             getBaseYtDlpArgs([
-
                 videoUrl,
 
                 '--download-sections',
-                `*${start}-${end}`,
-
-                /*
-                 * Prefer:
-                 * requested resolution
-                 * AVC / VP9
-                 * M4A
-                 */
+                `*${startTime}-${endTime}`,
 
                 '--format-sort',
-                `res:${targetHeight},vcodec:avc,vcodec:vp9,acodec:m4a`,
+                `res:${targetHeight},vcodec:vp9,vcodec:avc,acodec:m4a`,
 
                 '--downloader-args',
                 'ffmpeg_i:-threads 2',
@@ -2020,10 +1505,6 @@ async function handleCreateClip(
                 rawClipPath
             ]);
 
-        console.log(
-            `🚀 [Job ${jobId}] Starting yt-dlp`
-        );
-
         const ytdlpProcess =
             spawnYtDlp(
                 ytdlpSectionArgs
@@ -2031,24 +1512,14 @@ async function handleCreateClip(
 
         let ytdlpFullStderr = '';
 
-        ytdlpProcess.stdout.on(
-            'data',
-            (data) => {
-
-                console.log(
-                    `[Job ${jobId} stdout]: ${data.toString().trim()}`
-                );
-            }
-        );
-
         ytdlpProcess.stderr.on(
             'data',
-            (data) => {
-
+            data => {
                 const text =
                     data.toString();
 
-                ytdlpFullStderr += text;
+                ytdlpFullStderr +=
+                    text;
 
                 console.error(
                     `[Job ${jobId} stderr]: ${text.trim()}`
@@ -2058,36 +1529,30 @@ async function handleCreateClip(
 
         ytdlpProcess.on(
             'error',
-            (err) => {
-
+            err => {
                 console.error(
                     `[Job ${jobId}] yt-dlp spawn error:`,
                     err.message
                 );
 
-                if (jobs[jobId]) {
+                jobs[jobId].status =
+                    'failed';
 
-                    jobs[jobId].status =
-                        'failed';
-
-                    jobs[jobId].error =
-                        `Processing failed to initialize: ${err.message}`;
-                }
+                jobs[jobId].error =
+                    'Processing failed to initialize.';
             }
         );
 
         ytdlpProcess.on(
             'close',
-            async (code) => {
-
-                try {
-
-                    const foundFiles =
-                        fs.readdirSync(
+            async code => {
+                const foundFiles =
+                    fs
+                        .readdirSync(
                             CLIPS_DIR
                         )
                         .filter(
-                            (f) =>
+                            f =>
                                 f.startsWith(
                                     rawClipPrefix
                                 ) &&
@@ -2096,570 +1561,470 @@ async function handleCreateClip(
                                 )
                         );
 
-                    const actualRawPath =
-                        foundFiles.length > 0
-                            ? path.join(
-                                CLIPS_DIR,
-                                foundFiles[0]
-                            )
-                            : null;
+                const actualRawPath =
+                    foundFiles.length > 0
+                        ? path.join(
+                            CLIPS_DIR,
+                            foundFiles[0]
+                        )
+                        : null;
 
-                    // =================================================
-                    // DOWNLOAD FAILED
-                    // =================================================
+                if (
+                    code !== 0 ||
+                    !actualRawPath ||
+                    !fs.existsSync(
+                        actualRawPath
+                    )
+                ) {
+                    console.error(
+                        `[Job ${jobId}] Download failed (code ${code}):`,
+                        JSON.stringify(
+                            {
+                                requestedQuality:
+                                    quality,
+
+                                targetHeight,
+
+                                formatSelection,
+
+                                fullStderr:
+                                    ytdlpFullStderr
+                            },
+                            null,
+                            2
+                        )
+                    );
 
                     if (
-                        code !== 0 ||
-                        !actualRawPath ||
-                        !fs.existsSync(
-                            actualRawPath
+                        ytdlpFullStderr.includes(
+                            'Requested format is not available'
                         )
                     ) {
+                        jobs[jobId].status =
+                            'failed';
 
-                        console.error(
-                            `[Job ${jobId}] Download failed`
-                        );
+                        jobs[jobId].error =
+                            `Requested ${quality} quality is not available for this video on YouTube.`;
+                    } else {
+                        jobs[jobId].status =
+                            'failed';
 
-                        console.error(
-                            JSON.stringify(
-                                {
-                                    code,
-                                    requestedQuality:
-                                        quality,
-                                    targetHeight,
-                                    formatSelection,
-                                    fullStderr:
-                                        ytdlpFullStderr
-                                },
-                                null,
-                                2
-                            )
-                        );
-
-                        if (
-                            ytdlpFullStderr.includes(
-                                'Requested format is not available'
-                            )
-                        ) {
-
-                            jobs[jobId].status =
-                                'failed';
-
-                            jobs[jobId].error =
-                                `Requested ${quality} quality is not available for this video on YouTube.`;
-
-                        } else {
-
-                            const cleanError =
-                                ytdlpFullStderr
-                                    .split('\n')
-                                    .filter(Boolean)
-                                    .slice(-5)
-                                    .join(' ');
-
-                            jobs[jobId].status =
-                                'failed';
-
-                            jobs[jobId].error =
-                                cleanError ||
-                                'Failed to extract video section. Please try again.';
-                        }
-
-                        return;
+                        jobs[jobId].error =
+                            'Failed to extract video section. Please try again.';
                     }
 
-                    // =================================================
-                    // PROCESSING
-                    // =================================================
+                    return;
+                }
 
-                    jobs[jobId].status =
-                        'processing';
+                jobs[jobId].status =
+                    'processing';
 
-                    jobs[jobId].progress =
-                        50;
+                jobs[jobId].progress =
+                    50;
 
-                    // =================================================
-                    // SUBTITLES
-                    // =================================================
+                let subPath = null;
 
-                    let subPath = null;
+                if (
+                    subtitleTrackId &&
+                    !isAudioFormat(format) &&
+                    !isGif
+                ) {
+                    const subFileBase =
+                        path.join(
+                            CLIPS_DIR,
+                            `sub_${jobId}`
+                        );
 
-                    if (
-                        subtitleTrackId &&
-                        !isAudioFormat(
-                            normalizedFormat
-                        ) &&
-                        !isGif
-                    ) {
+                    const subArgs =
+                        getBaseYtDlpArgs([
+                            '--skip-download',
 
-                        const subFileBase =
-                            path.join(
-                                CLIPS_DIR,
-                                `sub_${jobId}`
-                            );
+                            '--write-subs',
 
-                        const subArgs =
-                            getBaseYtDlpArgs([
+                            '--write-auto-subs',
 
-                                '--skip-download',
+                            '--sub-lang',
+                            subtitleTrackId,
 
-                                '--write-subs',
+                            '--convert-subs',
+                            'srt',
 
-                                '--write-auto-subs',
+                            '-o',
+                            subFileBase,
 
-                                '--sub-lang',
-                                subtitleTrackId,
+                            videoUrl
+                        ]);
 
-                                '--convert-subs',
-                                'srt',
+                    const subProcess =
+                        spawnYtDlp(
+                            subArgs
+                        );
 
-                                '-o',
-                                subFileBase,
+                    await new Promise(
+                        resolve => {
+                            subProcess.on(
+                                'close',
+                                subCode => {
+                                    const expectedSubPath =
+                                        `${subFileBase}.${subtitleTrackId}.srt`;
 
-                                videoUrl
-                            ]);
-
-                        const subProcess =
-                            spawnYtDlp(
-                                subArgs
-                            );
-
-                        await new Promise(
-                            (resolve) => {
-
-                                subProcess.on(
-                                    'close',
-                                    (subCode) => {
-
-                                        const expectedSubPath =
-                                            `${subFileBase}.${subtitleTrackId}.srt`;
-
-                                        if (
-                                            subCode === 0 &&
-                                            fs.existsSync(
-                                                expectedSubPath
-                                            )
-                                        ) {
-
-                                            subPath =
-                                                expectedSubPath;
-                                        }
-
-                                        resolve();
+                                    if (
+                                        subCode === 0 &&
+                                        fs.existsSync(
+                                            expectedSubPath
+                                        )
+                                    ) {
+                                        subPath =
+                                            expectedSubPath;
                                     }
-                                );
-                            }
+
+                                    resolve();
+                                }
+                            );
+                        }
+                    );
+                }
+
+                const watermarkFilter =
+                    "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
+
+                // =================================================
+                // GIF
+                // =================================================
+                if (isGif) {
+                    const fps = 15;
+                    const scale = 540;
+
+                    const palettePath =
+                        path.join(
+                            CLIPS_DIR,
+                            `palette_${jobId}.png`
                         );
-                    }
 
-                    // =================================================
-                    // WATERMARK
-                    // =================================================
+                    const paletteArgs = [
+                        '-threads',
+                        '2',
 
-                    const watermarkFilter =
-                        "drawtext=text='CutterTube.com':x=10:y=H-th-10:fontsize=24:fontcolor=white@0.5:box=1:boxcolor=black@0.4";
+                        '-i',
+                        actualRawPath,
 
-                    // =================================================
-                    // GIF
-                    // =================================================
+                        '-vf',
+                        `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen`,
 
-                    if (isGif) {
+                        '-y',
+                        palettePath
+                    ];
 
-                        const fps = 15;
+                    const paletteProcess =
+                        spawn(
+                            FFMPEG_PATH,
+                            paletteArgs
+                        );
 
-                        const scale = 540;
+                    paletteProcess.on(
+                        'close',
+                        paletteCode => {
+                            if (
+                                paletteCode !== 0
+                            ) {
+                                jobs[jobId].status =
+                                    'failed';
 
-                        const palettePath =
-                            path.join(
-                                CLIPS_DIR,
-                                `palette_${jobId}.png`
-                            );
-
-                        const paletteArgs = [
-
-                            '-threads',
-                            '2',
-
-                            '-i',
-                            actualRawPath,
-
-                            '-vf',
-                            `fps=${fps},scale=${scale}:-1:flags=lanczos,palettegen`,
-
-                            '-y',
-                            palettePath
-                        ];
-
-                        const paletteProcess =
-                            spawn(
-                                FFMPEG_PATH,
-                                paletteArgs
-                            );
-
-                        paletteProcess.on(
-                            'close',
-                            (paletteCode) => {
+                                jobs[jobId].error =
+                                    'Image optimization failed.';
 
                                 if (
-                                    paletteCode !== 0
+                                    fs.existsSync(
+                                        actualRawPath
+                                    )
                                 ) {
+                                    fs.unlinkSync(
+                                        actualRawPath
+                                    );
+                                }
 
-                                    jobs[jobId].status =
-                                        'failed';
+                                return;
+                            }
 
-                                    jobs[jobId].error =
-                                        'Image optimization failed.';
+                            let filterComplex =
+                                `fps=${fps},scale=${scale}:-1:flags=lanczos`;
+
+                            if (
+                                permissions.watermark
+                            ) {
+                                filterComplex +=
+                                    `,${watermarkFilter}`;
+                            }
+
+                            filterComplex +=
+                                `[x];[x][1:v]paletteuse`;
+
+                            const gifArgs = [
+                                '-threads',
+                                '2',
+
+                                '-i',
+                                actualRawPath,
+
+                                '-i',
+                                palettePath,
+
+                                '-filter_complex',
+                                filterComplex,
+
+                                '-y',
+
+                                '-progress',
+                                'pipe:1',
+
+                                finalOutputPath
+                            ];
+
+                            const gifProcess =
+                                spawn(
+                                    FFMPEG_PATH,
+                                    gifArgs
+                                );
+
+                            handleFfmpegProcess(
+                                gifProcess,
+                                jobId,
+                                totalDuration,
+                                clipMetadata,
+                                () => {
+                                    if (
+                                        fs.existsSync(
+                                            palettePath
+                                        )
+                                    ) {
+                                        fs.unlinkSync(
+                                            palettePath
+                                        );
+                                    }
 
                                     if (
                                         fs.existsSync(
                                             actualRawPath
                                         )
                                     ) {
-
                                         fs.unlinkSync(
                                             actualRawPath
                                         );
                                     }
-
-                                    return;
                                 }
-
-                                let filterComplex =
-                                    `fps=${fps},scale=${scale}:-1:flags=lanczos`;
-
-                                if (
-                                    permissions.watermark
-                                ) {
-
-                                    filterComplex +=
-                                        `,${watermarkFilter}`;
-                                }
-
-                                filterComplex +=
-                                    `[x];[x][1:v]paletteuse`;
-
-                                const gifArgs = [
-
-                                    '-threads',
-                                    '2',
-
-                                    '-i',
-                                    actualRawPath,
-
-                                    '-i',
-                                    palettePath,
-
-                                    '-filter_complex',
-                                    filterComplex,
-
-                                    '-y',
-
-                                    '-progress',
-                                    'pipe:1',
-
-                                    finalOutputPath
-                                ];
-
-                                const gifProcess =
-                                    spawn(
-                                        FFMPEG_PATH,
-                                        gifArgs
-                                    );
-
-                                handleFfmpegProcess(
-                                    gifProcess,
-                                    jobId,
-                                    totalDuration,
-                                    clipMetadata,
-                                    () => {
-
-                                        if (
-                                            fs.existsSync(
-                                                palettePath
-                                            )
-                                        ) {
-
-                                            fs.unlinkSync(
-                                                palettePath
-                                            );
-                                        }
-
-                                        if (
-                                            fs.existsSync(
-                                                actualRawPath
-                                            )
-                                        ) {
-
-                                            fs.unlinkSync(
-                                                actualRawPath
-                                            );
-                                        }
-                                    }
-                                );
-                            }
-                        );
-
-                    // =================================================
-                    // AUDIO
-                    // =================================================
-
-                    } else if (
-                        isAudioFormat(
-                            normalizedFormat
-                        )
-                    ) {
-
-                        const ffmpegArgs = [
-
-                            '-threads',
-                            '2',
-
-                            '-i',
-                            actualRawPath,
-
-                            '-vn'
-                        ];
-
-                        if (
-                            normalizedFormat ===
-                            'mp3'
-                        ) {
-
-                            ffmpegArgs.push(
-                                '-c:a',
-                                'libmp3lame',
-                                '-q:a',
-                                '0'
-                            );
-
-                        } else if (
-                            normalizedFormat ===
-                            'wav'
-                        ) {
-
-                            ffmpegArgs.push(
-                                '-c:a',
-                                'pcm_s16le'
                             );
                         }
-
-                        ffmpegArgs.push(
-                            '-y',
-                            '-progress',
-                            'pipe:1',
-                            finalOutputPath
-                        );
-
-                        const ffmpegProcess =
-                            spawn(
-                                FFMPEG_PATH,
-                                ffmpegArgs
-                            );
-
-                        handleFfmpegProcess(
-                            ffmpegProcess,
-                            jobId,
-                            totalDuration,
-                            clipMetadata,
-                            () => {
-
-                                if (
-                                    fs.existsSync(
-                                        actualRawPath
-                                    )
-                                ) {
-
-                                    fs.unlinkSync(
-                                        actualRawPath
-                                    );
-                                }
-                            }
-                        );
-
-                    // =================================================
-                    // NORMAL VIDEO
-                    // =================================================
-
-                    } else {
-
-                        const ffmpegArgs = [
-                            '-threads',
-                            '2',
-
-                            '-i',
-                            actualRawPath
-                        ];
-
-                        const filters = [];
-
-                        if (
-                            permissions.watermark
-                        ) {
-
-                            filters.push(
-                                watermarkFilter
-                            );
-                        }
-
-                        if (subPath) {
-
-                            const escapedSubPath =
-                                subPath
-                                    .replace(
-                                        /\\/g,
-                                        '/'
-                                    )
-                                    .replace(
-                                        /:/g,
-                                        '\\:'
-                                    )
-                                    .replace(
-                                        /'/g,
-                                        "\\'"
-                                    );
-
-                            filters.push(
-                                `subtitles='${escapedSubPath}'`
-                            );
-                        }
-
-                        if (
-                            filters.length > 0
-                        ) {
-
-                            ffmpegArgs.push(
-                                '-vf',
-                                filters.join(',')
-                            );
-                        }
-
-                        // H264 output
-                        ffmpegArgs.push(
-                            '-c:v',
-                            'libx264',
-
-                            '-preset',
-                            'ultrafast',
-
-                            '-crf',
-                            '22'
-                        );
-
-                        if (mute) {
-
-                            ffmpegArgs.push(
-                                '-an'
-                            );
-
-                        } else {
-
-                            ffmpegArgs.push(
-                                '-c:a',
-                                'aac',
-
-                                '-b:a',
-                                '192k'
-                            );
-                        }
-
-                        ffmpegArgs.push(
-                            '-y',
-
-                            '-progress',
-                            'pipe:1',
-
-                            finalOutputPath
-                        );
-
-                        const ffmpegProcess =
-                            spawn(
-                                FFMPEG_PATH,
-                                ffmpegArgs
-                            );
-
-                        handleFfmpegProcess(
-                            ffmpegProcess,
-                            jobId,
-                            totalDuration,
-                            clipMetadata,
-                            () => {
-
-                                if (
-                                    subPath &&
-                                    fs.existsSync(
-                                        subPath
-                                    )
-                                ) {
-
-                                    fs.unlinkSync(
-                                        subPath
-                                    );
-                                }
-
-                                if (
-                                    fs.existsSync(
-                                        actualRawPath
-                                    )
-                                ) {
-
-                                    fs.unlinkSync(
-                                        actualRawPath
-                                    );
-                                }
-                            }
-                        );
-                    }
-
-                } catch (err) {
-
-                    console.error(
-                        `[Job ${jobId}] Close handler error:`,
-                        err
                     );
 
-                    if (jobs[jobId]) {
+                // =================================================
+                // AUDIO
+                // =================================================
+                } else if (
+                    isAudioFormat(format)
+                ) {
+                    let ffmpegArgs = [
+                        '-threads',
+                        '2',
 
-                        jobs[jobId].status =
-                            'failed';
+                        '-i',
+                        actualRawPath,
 
-                        jobs[jobId].error =
-                            err.message ||
-                            'Video processing failed.';
+                        '-vn'
+                    ];
+
+                    if (
+                        format === 'mp3'
+                    ) {
+                        ffmpegArgs.push(
+                            '-c:a',
+                            'libmp3lame',
+                            '-q:a',
+                            '0'
+                        );
+                    } else if (
+                        format === 'wav'
+                    ) {
+                        ffmpegArgs.push(
+                            '-c:a',
+                            'pcm_s16le'
+                        );
                     }
+
+                    ffmpegArgs.push(
+                        '-y',
+                        '-progress',
+                        'pipe:1',
+                        finalOutputPath
+                    );
+
+                    const ffmpegProcess =
+                        spawn(
+                            FFMPEG_PATH,
+                            ffmpegArgs
+                        );
+
+                    handleFfmpegProcess(
+                        ffmpegProcess,
+                        jobId,
+                        totalDuration,
+                        clipMetadata,
+                        () => {
+                            if (
+                                fs.existsSync(
+                                    actualRawPath
+                                )
+                            ) {
+                                fs.unlinkSync(
+                                    actualRawPath
+                                );
+                            }
+                        }
+                    );
+
+                // =================================================
+                // VIDEO
+                // =================================================
+                } else {
+                    let ffmpegArgs = [
+                        '-threads',
+                        '2',
+
+                        '-i',
+                        actualRawPath
+                    ];
+
+                    let filters = [];
+
+                    if (
+                        permissions.watermark
+                    ) {
+                        filters.push(
+                            watermarkFilter
+                        );
+                    }
+
+                    if (subPath) {
+                        const escapedSubPath =
+                            subPath
+                                .replace(
+                                    /\\/g,
+                                    '/'
+                                )
+                                .replace(
+                                    /:/g,
+                                    '\\:'
+                                )
+                                .replace(
+                                    /'/g,
+                                    "\\'"
+                                );
+
+                        filters.push(
+                            `subtitles='${escapedSubPath}'`
+                        );
+                    }
+
+                    if (
+                        filters.length > 0
+                    ) {
+                        ffmpegArgs.push(
+                            '-vf',
+                            filters.join(',')
+                        );
+                    }
+
+                    ffmpegArgs.push(
+                        '-c:v',
+                        'libx264',
+
+                        '-preset',
+                        'ultrafast',
+
+                        '-crf',
+                        '22'
+                    );
+
+                    if (mute) {
+                        ffmpegArgs.push(
+                            '-an'
+                        );
+                    } else {
+                        ffmpegArgs.push(
+                            '-c:a',
+                            'aac',
+
+                            '-b:a',
+                            '192k'
+                        );
+                    }
+
+                    ffmpegArgs.push(
+                        '-y',
+
+                        '-progress',
+                        'pipe:1',
+
+                        finalOutputPath
+                    );
+
+                    const ffmpegProcess =
+                        spawn(
+                            FFMPEG_PATH,
+                            ffmpegArgs
+                        );
+
+                    handleFfmpegProcess(
+                        ffmpegProcess,
+                        jobId,
+                        totalDuration,
+                        clipMetadata,
+                        () => {
+                            if (
+                                subPath &&
+                                fs.existsSync(
+                                    subPath
+                                )
+                            ) {
+                                fs.unlinkSync(
+                                    subPath
+                                );
+                            }
+
+                            if (
+                                fs.existsSync(
+                                    actualRawPath
+                                )
+                            ) {
+                                fs.unlinkSync(
+                                    actualRawPath
+                                );
+                            }
+                        }
+                    );
                 }
             }
         );
 
     } catch (e) {
-
         console.error(
-            '[/create-clip Error]',
-            e
+            "[/create-clip Error]:",
+            e.message
         );
 
         if (
             jobId &&
             jobs[jobId]
         ) {
-
-            jobs[jobId].status =
-                'failed';
-
-            jobs[jobId].error =
-                e.message ||
-                'An error occurred while preparing your video.';
+            delete jobs[jobId];
         }
 
         if (!res.headersSent) {
-
-            res.status(500).json({
-
-                message:
-                    'An error occurred while preparing your video.',
-
-                details:
-                    e.message
-            });
+            res
+                .status(500)
+                .json({
+                    message:
+                        "An error occurred while preparing your video."
+                });
         }
     }
 }
@@ -2675,9 +2040,8 @@ app.post(
 );
 
 // =============================================================
-// 23. FFMPEG PROCESS HANDLER
+// FFmpeg process
 // =============================================================
-
 function handleFfmpegProcess(
     ffmpegProcess,
     jobId,
@@ -2685,7 +2049,6 @@ function handleFfmpegProcess(
     clipMetadata,
     onCompleteCallback
 ) {
-
     const job =
         jobs[jobId];
 
@@ -2703,12 +2066,9 @@ function handleFfmpegProcess(
 
     ffmpegProcess.stderr.on(
         'data',
-        (data) => {
-
-            const text =
+        data => {
+            stderrOutput +=
                 data.toString();
-
-            stderrOutput += text;
 
             const timeMatch =
                 stderrOutput.match(
@@ -2716,7 +2076,6 @@ function handleFfmpegProcess(
                 );
 
             if (timeMatch) {
-
                 const lastTime =
                     timeMatch.pop();
 
@@ -2725,53 +2084,36 @@ function handleFfmpegProcess(
                         /(\d{2}):(\d{2}):(\d{2})\.(\d{2})/
                     );
 
-                if (
-                    parts &&
-                    totalDuration > 0
-                ) {
+                const currentTime =
+                    parseInt(parts[1]) * 3600 +
+                    parseInt(parts[2]) * 60 +
+                    parseInt(parts[3]) +
+                    parseInt(parts[4]) / 100;
 
-                    const currentTime =
-                        parseInt(parts[1]) *
-                            3600 +
-
-                        parseInt(parts[2]) *
-                            60 +
-
-                        parseInt(parts[3]) +
-
-                        parseInt(parts[4]) /
-                            100;
-
-                    job.progress =
-                        Math.min(
-                            99,
-
-                            baseProgress +
-                                Math.floor(
-                                    (
-                                        currentTime /
-                                        totalDuration
-                                    ) *
-                                    (
-                                        progressRange -
-                                        1
-                                    )
-                                )
-                        );
-                }
+                job.progress =
+                    Math.min(
+                        99,
+                        baseProgress +
+                        Math.floor(
+                            (
+                                currentTime /
+                                totalDuration
+                            ) *
+                            (progressRange - 1)
+                        )
+                    );
             }
         }
     );
 
     ffmpegProcess.on(
         'error',
-        (err) => {
-
+        err => {
             job.status =
                 'failed';
 
             job.error =
-                `Rendering process error: ${err.message}`;
+                'Processing encountered an unexpected error.';
 
             console.error(
                 `[Job ${jobId}] Rendering process error:`,
@@ -2782,13 +2124,9 @@ function handleFfmpegProcess(
 
     ffmpegProcess.on(
         'close',
-        (code) => {
-
+        code => {
             const isFileReady =
-                (
-                    code === 0 ||
-                    code === null
-                ) &&
+                (code === 0 || code === null) &&
                 fs.existsSync(
                     path.join(
                         CLIPS_DIR,
@@ -2796,40 +2134,20 @@ function handleFfmpegProcess(
                     )
                 );
 
-            // =====================================================
-            // SUCCESS
-            // =====================================================
-
             if (isFileReady) {
-
-                if (
-                    onCompleteCallback
-                ) {
-
-                    try {
-                        onCompleteCallback();
-                    } catch (e) {
-
-                        console.error(
-                            `[Job ${jobId}] Cleanup warning:`,
-                            e.message
-                        );
-                    }
+                if (onCompleteCallback) {
+                    onCompleteCallback();
                 }
 
                 async function logClipToDatabase() {
-
                     try {
-
                         if (
                             !clipMetadata.userId
                         ) {
-
                             return;
                         }
 
                         const insertData = {
-
                             id:
                                 jobId,
 
@@ -2866,7 +2184,6 @@ function handleFfmpegProcess(
                             );
 
                     } catch (dbError) {
-
                         console.error(
                             `[Job ${jobId}] DB Log Warning:`,
                             dbError.message
@@ -2886,31 +2203,19 @@ function handleFfmpegProcess(
                     100;
 
                 job.result = {
-
                     success: true,
-
                     downloadUrl
                 };
 
-                console.log(
-                    `✅ [Job ${jobId}] Completed`
-                );
-
             } else {
-
                 job.status =
                     'failed';
 
                 job.error =
-                    stderrOutput
-                        .split('\n')
-                        .filter(Boolean)
-                        .slice(-3)
-                        .join(' ') ||
                     'Video processing failed. Please try again.';
 
                 console.error(
-                    `[Job ${jobId}] FFmpeg exited with code ${code}`
+                    `[Job ${jobId}] Render process exited with code ${code}.`
                 );
             }
         }
@@ -2918,16 +2223,13 @@ function handleFfmpegProcess(
 }
 
 // =============================================================
-// 24. DOWNLOAD
+// GET /download/:tempFilename/:finalFilename
 // =============================================================
-
 function handleDownload(
     req,
     res
 ) {
-
     try {
-
         const {
             tempFilename,
             finalFilename
@@ -2949,7 +2251,6 @@ function handleDownload(
                 filePath
             )
         ) {
-
             return res
                 .status(404)
                 .send(
@@ -2965,31 +2266,26 @@ function handleDownload(
         res.download(
             filePath,
             decodedFinalFilename,
-            (err) => {
-
+            err => {
                 if (
                     err &&
                     err.code !==
-                        'ECONNABORTED'
+                    'ECONNABORTED'
                 ) {
-
                     console.error(
-                        '[Download Note]:',
+                        "[Download Note]:",
                         err.message
                     );
                 }
 
                 setTimeout(
                     () => {
-
                         try {
-
                             if (
                                 fs.existsSync(
                                     filePath
                                 )
                             ) {
-
                                 fs.unlinkSync(
                                     filePath
                                 );
@@ -2998,11 +2294,7 @@ function handleDownload(
                                     `🧹 Temp file ${tempFilename} cleaned up.`
                                 );
                             }
-
-                        } catch (e) {
-                            // Ignore cleanup errors
-                        }
-
+                        } catch (e) {}
                     },
                     5 * 60 * 1000
                 );
@@ -3010,16 +2302,15 @@ function handleDownload(
         );
 
     } catch (error) {
-
         console.error(
-            '[Download Error]',
+            "[Download Error]",
             error
         );
 
         res
             .status(500)
             .send(
-                'An internal server error occurred.'
+                "An internal server error occurred."
             );
     }
 }
@@ -3035,23 +2326,23 @@ app.get(
 );
 
 // =============================================================
-// 25. VIDEO TRANSCRIPT
+// Video to Text / Transcript
 // =============================================================
-
 app.get(
     [
         '/video-transcript',
         '/api/video-transcript'
     ],
-    async (req, res) => {
-
+    async (
+        req,
+        res
+    ) => {
         const {
             videoId,
             lang = 'en'
         } = req.query;
 
         if (!videoId) {
-
             return res
                 .status(400)
                 .json({
@@ -3071,7 +2362,6 @@ app.get(
 
         const subArgs =
             getBaseYtDlpArgs([
-
                 '--skip-download',
 
                 '--write-subs',
@@ -3099,8 +2389,7 @@ app.get(
 
         ytdlp.stderr.on(
             'data',
-            (data) => {
-
+            data => {
                 stderrOutput +=
                     data.toString();
             }
@@ -3108,8 +2397,7 @@ app.get(
 
         ytdlp.on(
             'close',
-            (code) => {
-
+            code => {
                 let vttPath =
                     `${subFileBase}.${lang}.vtt`;
 
@@ -3118,40 +2406,31 @@ app.get(
                         vttPath
                     )
                 ) {
-
                     const foundFiles =
-                        fs.readdirSync(
-                            CLIPS_DIR
-                        )
-                        .filter(
-                            (f) =>
-                                f.startsWith(
-                                    path.basename(
-                                        subFileBase
+                        fs
+                            .readdirSync(
+                                CLIPS_DIR
+                            )
+                            .filter(
+                                f =>
+                                    f.startsWith(
+                                        path.basename(
+                                            subFileBase
+                                        )
+                                    ) &&
+                                    f.endsWith(
+                                        '.vtt'
                                     )
-                                ) &&
-                                f.endsWith(
-                                    '.vtt'
-                                )
-                        );
+                            );
 
                     if (
                         foundFiles.length === 0
                     ) {
-
                         return res
                             .status(404)
                             .json({
-
                                 message:
-                                    'No subtitles/transcript found for this video.',
-
-                                details:
-                                    stderrOutput
-                                        .split('\n')
-                                        .filter(Boolean)
-                                        .slice(-5)
-                                        .join(' ')
+                                    'No subtitles/transcript found for this video.'
                             });
                     }
 
@@ -3163,7 +2442,6 @@ app.get(
                 }
 
                 try {
-
                     const rawVtt =
                         fs.readFileSync(
                             vttPath,
@@ -3180,22 +2458,18 @@ app.get(
                     let currentStart = '';
 
                     lines.forEach(
-                        (line) => {
-
+                        line => {
                             const timeMatch =
                                 line.match(
                                     /(\d{2}:\d{2}(?::\d{2})?\.\d{3})\s*-->\s*(\d{2}:\d{2}(?::\d{2})?\.\d{3})/
                                 );
 
                             if (timeMatch) {
-
                                 if (
                                     currentText.length > 0 &&
                                     currentStart
                                 ) {
-
                                     segments.push({
-
                                         time:
                                             currentStart,
 
@@ -3209,7 +2483,8 @@ app.get(
                                                 .trim()
                                     });
 
-                                    currentText = [];
+                                    currentText =
+                                        [];
                                 }
 
                                 currentStart =
@@ -3228,7 +2503,6 @@ app.get(
                                     'Language:'
                                 )
                             ) {
-
                                 const cleanLine =
                                     line
                                         .replace(
@@ -3243,7 +2517,6 @@ app.get(
                                         cleanLine
                                     )
                                 ) {
-
                                     currentText.push(
                                         cleanLine
                                     );
@@ -3256,9 +2529,7 @@ app.get(
                         currentText.length > 0 &&
                         currentStart
                     ) {
-
                         segments.push({
-
                             time:
                                 currentStart,
 
@@ -3276,8 +2547,7 @@ app.get(
                     const plainText =
                         segments
                             .map(
-                                (s) =>
-                                    s.text
+                                s => s.text
                             )
                             .join(' ');
 
@@ -3285,34 +2555,26 @@ app.get(
                         fs.unlinkSync(
                             vttPath
                         );
-                    } catch (e) {
-                        // Ignore
-                    }
+                    } catch (e) {}
 
                     res.json({
-
                         success: true,
-
                         videoId,
-
-                        language:
-                            lang,
-
+                        language: lang,
                         plainText,
-
                         segments
                     });
 
                 } catch (e) {
+                    res
+                        .status(500)
+                        .json({
+                            message:
+                                'Failed to parse transcript.',
 
-                    res.status(500).json({
-
-                        message:
-                            'Failed to parse transcript.',
-
-                        error:
-                            e.message
-                    });
+                            error:
+                                e.message
+                        });
                 }
             }
         );
@@ -3320,16 +2582,17 @@ app.get(
 );
 
 // =============================================================
-// 26. CHANNEL ASSETS
+// Channel Assets
 // =============================================================
-
 app.get(
     [
         '/channel-assets',
         '/api/channel-assets'
     ],
-    async (req, res) => {
-
+    async (
+        req,
+        res
+    ) => {
         let {
             url,
             channelUrl,
@@ -3342,11 +2605,9 @@ app.get(
             handle;
 
         if (!targetUrl) {
-
             return res
                 .status(400)
                 .json({
-
                     message:
                         'Channel URL, handle (@name), or video URL is required.'
                 });
@@ -3355,28 +2616,21 @@ app.get(
         if (
             targetUrl.startsWith('@')
         ) {
-
             targetUrl =
                 `https://www.youtube.com/${targetUrl}`;
 
         } else if (
-            !targetUrl.startsWith(
-                'http'
-            )
+            !targetUrl.startsWith('http')
         ) {
-
             targetUrl =
                 `https://www.youtube.com/@${targetUrl}`;
         }
 
         const ytdlpArgs =
             getBaseYtDlpArgs([
-
                 '--dump-json',
-
                 '--playlist-items',
                 '1',
-
                 targetUrl
             ]);
 
@@ -3390,8 +2644,7 @@ app.get(
 
         ytdlp.stdout.on(
             'data',
-            (data) => {
-
+            data => {
                 output +=
                     data.toString();
             }
@@ -3399,8 +2652,7 @@ app.get(
 
         ytdlp.stderr.on(
             'data',
-            (data) => {
-
+            data => {
                 errorOutput +=
                     data.toString();
             }
@@ -3408,31 +2660,26 @@ app.get(
 
         ytdlp.on(
             'close',
-            (code) => {
-
+            code => {
                 if (
                     code !== 0 ||
                     !output.trim()
                 ) {
-
                     return res
                         .status(404)
                         .json({
-
                             message:
                                 'Could not fetch channel details.',
 
                             details:
                                 errorOutput
-                                    .split('\n')
-                                    .filter(Boolean)
-                                    .slice(-3)
-                                    .join(' ')
+                                    ? errorOutput
+                                        .split('\n')[0]
+                                    : 'Unknown error'
                         });
                 }
 
                 try {
-
                     const info =
                         JSON.parse(
                             output
@@ -3444,7 +2691,7 @@ app.get(
                         info.title ||
                         'YouTube Channel';
 
-                    const resolvedChannelUrl =
+                    const channelUrl =
                         info.channel_url ||
                         info.uploader_url ||
                         targetUrl;
@@ -3453,14 +2700,12 @@ app.get(
                         info.channel_thumbnail ||
                         info.uploader_avatar ||
                         info.thumbnails?.find(
-                            (t) =>
-                                t.id ===
-                                'avatar'
+                            t =>
+                                t.id === 'avatar'
                         )?.url ||
                         `https://i.ytimg.com/vi/${info.id}/hqdefault.jpg`;
 
-                    let bannerUrl =
-                        null;
+                    let bannerUrl = null;
 
                     if (
                         info.thumbnails &&
@@ -3468,10 +2713,9 @@ app.get(
                             info.thumbnails
                         )
                     ) {
-
                         const banners =
                             info.thumbnails.filter(
-                                (t) =>
+                                t =>
                                     (
                                         t.width &&
                                         t.width > 1000
@@ -3487,7 +2731,6 @@ app.get(
                         if (
                             banners.length > 0
                         ) {
-
                             bannerUrl =
                                 banners[
                                     banners.length - 1
@@ -3496,16 +2739,13 @@ app.get(
                     }
 
                     res.json({
-
                         success: true,
 
                         channelTitle,
 
-                        channelUrl:
-                            resolvedChannelUrl,
+                        channelUrl,
 
                         avatar: {
-
                             high:
                                 avatarUrl.replace(
                                     /=s\d+/,
@@ -3526,7 +2766,6 @@ app.get(
                         },
 
                         banner: {
-
                             original:
                                 bannerUrl,
 
@@ -3549,15 +2788,15 @@ app.get(
                     });
 
                 } catch (e) {
+                    res
+                        .status(500)
+                        .json({
+                            message:
+                                'Failed to parse channel assets.',
 
-                    res.status(500).json({
-
-                        message:
-                            'Failed to parse channel assets.',
-
-                        error:
-                            e.message
-                    });
+                            error:
+                                e.message
+                        });
                 }
             }
         );
@@ -3565,74 +2804,12 @@ app.get(
 );
 
 // =============================================================
-// 27. 404 JSON FOR API ROUTES
+// 7. تشغيل السيرفر
 // =============================================================
-
-app.use(
-    (req, res, next) => {
-
-        if (
-            req.path.startsWith('/api/') ||
-            req.path === '/video-metadata' ||
-            req.path === '/create-clip' ||
-            req.path.startsWith('/progress/')
-        ) {
-
-            return res
-                .status(404)
-                .json({
-
-                    message:
-                        'API endpoint not found.',
-
-                    path:
-                        req.path
-                });
-        }
-
-        next();
-    }
-);
-
-// =============================================================
-// 28. ERROR HANDLER
-// =============================================================
-
-app.use(
-    (err, req, res, next) => {
-
-        console.error(
-            '❌ Express error:',
-            err
-        );
-
-        if (
-            res.headersSent
-        ) {
-
-            return next(err);
-        }
-
-        res.status(500).json({
-
-            message:
-                'Internal server error.',
-
-            details:
-                err.message
-        });
-    }
-);
-
-// =============================================================
-// 29. START SERVER
-// =============================================================
-
 app.listen(
     PORT,
     '0.0.0.0',
     () => {
-
         console.log(
             `✅ CutterTube Server is running on port ${PORT}`
         );
@@ -3640,34 +2817,7 @@ app.listen(
         console.log(
             `🌐 Public API URL: ${PUBLIC_API_URL}`
         );
-
-        console.log(
-            `🎬 FFmpeg: ${FFMPEG_PATH}`
-        );
-
-        console.log(
-            `🍪 YouTube cookies: ${
-                fs.existsSync(COOKIES_PATH) ||
-                fs.existsSync(
-                    path.join(
-                        __dirname,
-                        'cookies.txt'
-                    )
-            } ? 'YES' : 'NO'}`
-        );
-
-        console.log(
-            `🔐 BGUTIL: ${
-                process.env.BGUTIL_POT_PROVIDER_URL
-                    ? 'ENABLED'
-                    : 'DISABLED'
-            }`
-        );
     }
 );
-
-// =============================================================
-// 30. EXPORT
-// =============================================================
 
 module.exports = app;
