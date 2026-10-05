@@ -178,60 +178,35 @@ if (process.env.YOUTUBE_COOKIES) {
 // =============================================================
 
 function getBaseYtDlpArgs(extraArgs = []) {
-
     const potProviderUrl =
         process.env.BGUTIL_POT_PROVIDER_URL?.trim() ||
-        null;
+        'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
 
     const args = [
         '--user-agent',
         USER_AGENT,
-
         '--no-warnings',
-
         '--no-check-certificates',
-
         '--no-playlist',
-
         '--force-ipv4',
-
         '--js-runtimes',
-        'node'
+        'node',
+        // ربط خادم التوكنات وعميل mweb الأكثر استقراراً
+        '--extractor-args',
+        `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
+        '--extractor-args',
+        'youtube:player_client=mweb,default'
     ];
 
-    if (potProviderUrl) {
-        args.push(
-            '--extractor-args',
-            `youtubepot-bgutilhttp:base_url=${potProviderUrl}`
-        );
-    }
-
-    const localCookieFile =
-        path.join(
-            __dirname,
-            'cookies.txt'
-        );
-
-    const hasCookies =
-        fs.existsSync(COOKIES_PATH) ||
-        fs.existsSync(localCookieFile);
+    const localCookieFile = path.join(__dirname, 'cookies.txt');
+    const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
     if (hasCookies) {
-        const cookieToUse =
-            fs.existsSync(COOKIES_PATH)
-                ? COOKIES_PATH
-                : localCookieFile;
-
-        args.push(
-            '--cookies',
-            cookieToUse
-        );
+        const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
+        args.push('--cookies', cookieToUse);
     }
 
-    return [
-        ...args,
-        ...extraArgs
-    ];
+    return [...args, ...extraArgs];
 }
 
 // =============================================================
