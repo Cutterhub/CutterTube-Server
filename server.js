@@ -178,24 +178,18 @@ if (process.env.YOUTUBE_COOKIES) {
 // =============================================================
 
 function getBaseYtDlpArgs(extraArgs = []) {
-    const potProviderUrl =
-        process.env.BGUTIL_POT_PROVIDER_URL?.trim() ||
-        'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
+    const potProviderUrl = process.env.BGUTIL_POT_PROVIDER_URL || 'http://bgutil-ytdlp-pot-provider.railway.internal:4416';
 
     const args = [
-        '--user-agent',
-        USER_AGENT,
+        '--user-agent', USER_AGENT,
         '--no-warnings',
         '--no-check-certificates',
         '--no-playlist',
         '--force-ipv4',
-        '--js-runtimes',
-        'node',
-        // ربط خادم التوكنات وعميل mweb الأكثر استقراراً
-        '--extractor-args',
-        `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
-        '--extractor-args',
-        'youtube:player_client=mweb,default'
+        '--js-runtimes', 'node',
+        // دمج خادم التوكنات وعملاء يوتيوب المتوافقة
+        '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
+        '--extractor-args', 'youtube:player_client=mweb,android,ios,web'
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
