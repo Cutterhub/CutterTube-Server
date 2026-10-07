@@ -12,7 +12,7 @@ RUN apt-get update \
        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# تثبيت yt-dlp مع إطار التوكنات ومزود bgutil معاً
+# تثبيت yt-dlp وإطار التوكنات ومزود bgutil
 RUN python3 -m pip install -U yt-dlp yt-dlp-get-pot bgutil-ytdlp-pot-provider --break-system-packages
 
 COPY package*.json ./
@@ -30,4 +30,3 @@ ENV PORT=4000
 EXPOSE 4000
 
 CMD ["npm", "start"]
-
