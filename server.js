@@ -181,15 +181,15 @@ function getBaseYtDlpArgs(extraArgs = []) {
         '--no-playlist',
         '--force-ipv4',
         '--js-runtimes', 'node',
-        // دمج خادم التوكنات وعملاء يوتيوب المتوافقة
+        // استخدام مزود التوكنات مع عملاء متعددين
         '--extractor-args', `youtubepot-bgutilhttp:base_url=${potProviderUrl}`,
-        '--extractor-args', 'youtube:player_client=mweb,android,ios,web'
+        '--extractor-args', 'youtube:player_client=web,web_embedded,ios,android,mweb'
     ];
 
     const localCookieFile = path.join(__dirname, 'cookies.txt');
     const hasCookies = fs.existsSync(COOKIES_PATH) || fs.existsSync(localCookieFile);
 
-    if (hasCookies) {
+    if (process.env.USE_YOUTUBE_COOKIES !== 'false' && hasCookies) {
         const cookieToUse = fs.existsSync(COOKIES_PATH) ? COOKIES_PATH : localCookieFile;
         args.push('--cookies', cookieToUse);
     }
