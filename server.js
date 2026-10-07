@@ -34,34 +34,28 @@ const PUBLIC_API_URL =
 
 app.use(cors({
     origin: (origin, callback) => {
-        if (
-            !origin ||
-            origin.includes('cuttertube.com') ||
-            origin.includes('vercel.app') ||
-            origin.includes('localhost') ||
-            origin.includes('127.0.0.1') ||
-            origin.startsWith('chrome-extension://')
-        ) {
+        // السماح بالطلبات بدون Origin أو من إضافات المتصفح
+        if (!origin || origin.startsWith('chrome-extension://')) {
             return callback(null, true);
         }
 
-        return callback(null, true);
+        // السماح بـ cutteryt و cuttertube (مع www وبدونها) والتطوير المحلي
+        const isAllowed = 
+            origin.includes('cutteryt.com') ||
+            origin.includes('cuttertube.com') ||
+            origin.includes('vercel.app') ||
+            origin.includes('localhost') ||
+            origin.includes('127.0.0.1');
+
+        if (isAllowed) {
+            return callback(null, true);
+        }
+
+        return callback(null, true); // قبول آمن بدون إسقاط السيرفر
     },
-
     credentials: true,
-
-    methods: [
-        'GET',
-        'POST',
-        'OPTIONS'
-    ],
-
-    allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'x-app-client',
-        'x-requested-with'
-    ]
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-app-client', 'x-requested-with']
 }));
 
 app.options('*', cors());
